@@ -13,7 +13,7 @@ func TestHandshakeResponseIncludesOceanBaseOracleExtensions(t *testing.T) {
 	cfg := &Config{
 		Addr:       "127.0.0.1:2883",
 		User:       "sys@tenant#cluster",
-		Password:   "secret",
+		Password:   "test-password",
 		Timeout:    time.Second,
 		Attributes: map[string]string{},
 	}

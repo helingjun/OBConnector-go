@@ -1,5 +1,7 @@
 # obconnector-go
 
+[中文文档](README.zh-CN.md)
+
 Clean-room OceanBase driver experiments for Go's `database/sql`.
 
 The first milestone is a pure-Go PoC that can connect to an OceanBase Oracle tenant and run:
@@ -77,7 +79,7 @@ Client-side `?` parameter validation:
 
 ```bash
 go run ./cmd/obping \
-  -dsn 'oceanbase://user:secret@127.0.0.1:2881/?timeout=5s' \
+  -dsn 'oceanbase://user:password@127.0.0.1:2881/?timeout=5s' \
   -param-test
 ```
 
