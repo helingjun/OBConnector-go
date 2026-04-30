@@ -1,0 +1,26 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- Pure Go `database/sql` driver (`oceanbase` / `oboracle`) for OceanBase **Oracle** tenants over the MySQL-compatible protocol: handshake with Oracle-mode capability and OB client attributes, `mysql_native_password`, `COM_QUERY`, text result sets, streaming rows, OK/ERR parsing.
+- DSN parsing: URL form, legacy `tcp()`, opaque `oceanbase:user:pass@host:port/db`, query options (`timeout`, `connect timeout`, `trace`, `preset`, `cap.add` / `cap.drop`, `attr.*`, `init_sql`).
+- Client-side `?` parameter interpolation (with quote/comment-aware placeholder counting) for `Query`/`Exec`/`Prepare` paths without server-side binary PS.
+- Transactions: implicit Oracle-style session with explicit `commit` / `rollback` from `Tx`.
+- Connection pool hooks: `Ping`, `ResetSession`, `IsValid`, `ErrBadConn` mapping for recoverable connection errors.
+- `cmd/obping`: scalar/query modes, `-tx-test`, `-exec-test`, `-param-test`, `-pool-test`, `-trace`, preset probing.
+- Documentation: `README.md`, `README.zh-CN.md`, `docs/protocol-notes.md`, contributing and security templates.
+
+### Known limitations
+
+- No TLS yet; conservative text-protocol type mapping; no full server-side prepared statements.
+
+## [0.1.0-dev]
+
+Initial public development snapshot (see git history for detailed commits).

@@ -20,6 +20,10 @@ This project may use public documentation, packet captures from owned test envir
 
 Record protocol findings in `docs/protocol-notes.md`, with sensitive hostnames, tenant names, usernames, passwords, and packet payloads redacted.
 
+## Git author metadata
+
+Prefer a stable public email in commits (not a machine-local `*.local` address). The repository includes a `.mailmap` so historical commits and `git shortlog` can group contributors consistently.
+
 ## Pull Requests
 
 Pull requests should include:

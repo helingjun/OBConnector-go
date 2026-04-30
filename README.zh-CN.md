@@ -141,6 +141,15 @@ go run ./cmd/obping \
   -param-test
 ```
 
+连接池生命周期验证：
+
+```bash
+go run ./cmd/obping \
+  -dsn 'oceanbase://user:password@127.0.0.1:2881/?timeout=5s' \
+  -pool-test \
+  -trace
+```
+
 ## OceanBase Oracle 租户关键发现
 
 普通 MySQL Go 驱动连接 OceanBase Oracle 租户时，可能被服务端拒绝并返回：

@@ -216,6 +216,14 @@ go run ./cmd/obping \
   -user '<user>@<tenant>#<cluster>' \
   -password '<password>' \
   -param-test
+
+go run ./cmd/obping \
+  -host <host> \
+  -port <port> \
+  -user '<user>@<tenant>#<cluster>' \
+  -password '<password>' \
+  -pool-test \
+  -trace
 ```
 
 When reporting a capture result back into this document, include:

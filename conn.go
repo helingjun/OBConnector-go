@@ -105,8 +105,10 @@ func (c *Conn) ResetSession(ctx context.Context) error {
 		return err
 	}
 	if !c.inTx {
+		c.tracef("reset session: no active transaction")
 		return nil
 	}
+	c.tracef("reset session: rollback active transaction")
 	if _, err := c.execLocked(ctx, "rollback"); err != nil {
 		return c.markBadIfConnErr(err)
 	}

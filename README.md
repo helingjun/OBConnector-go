@@ -83,6 +83,15 @@ go run ./cmd/obping \
   -param-test
 ```
 
+Connection pool lifecycle validation:
+
+```bash
+go run ./cmd/obping \
+  -dsn 'oceanbase://user:password@127.0.0.1:2881/?timeout=5s' \
+  -pool-test \
+  -trace
+```
+
 DSN query parameters:
 
 - `trace=true` prints high-level handshake and query details to stderr.

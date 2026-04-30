@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/helingjun/obconnector-go"
@@ -41,6 +42,7 @@ func main() {
 		execTest  = flag.Bool("exec-test", false, "run a DDL/DML ExecContext smoke test with a temporary table")
 		execTable = flag.String("exec-table", "", "table name for -exec-test; defaults to a generated OBGO_SMOKE_* name")
 		paramTest = flag.Bool("param-test", false, "run parameterized QueryContext/ExecContext smoke tests")
+		poolTest  = flag.Bool("pool-test", false, "run database/sql pool lifecycle smoke tests")
 	)
 	flag.Var(&attrs, "attr", "connection attribute key=value; can be repeated")
 	flag.Var(&initSQL, "init", "initial SQL to run after auth; can be repeated")
@@ -86,6 +88,13 @@ func main() {
 
 	if *paramTest {
 		if err := runParamTest(ctx, connString, *execTable); err != nil {
+			exitErr(err)
+		}
+		return
+	}
+
+	if *poolTest {
+		if err := runPoolTest(ctx, connString); err != nil {
 			exitErr(err)
 		}
 		return
@@ -337,6 +346,131 @@ func runParamTest(ctx context.Context, connString string, tableName string) erro
 		return err
 	}
 	fmt.Println("ok: param-test completed")
+	return nil
+}
+
+func runPoolTest(ctx context.Context, connString string) error {
+	db, err := openDB(connString)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
+
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping failed: %w", err)
+	}
+	fmt.Println("pool-test ping: ok")
+
+	firstID, err := queryOnDedicatedConn(ctx, db)
+	if err != nil {
+		return err
+	}
+	secondID, err := queryOnDedicatedConn(ctx, db)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("pool-test idle-reuse: first=%s second=%s reused=%t\n", firstID, secondID, firstID == secondID)
+	if firstID != secondID {
+		return fmt.Errorf("idle connection was not reused")
+	}
+
+	if err := closeOneDriverConn(ctx, db); err != nil {
+		return err
+	}
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("bad connection retry ping failed: %w", err)
+	}
+	fmt.Println("pool-test bad-conn-retry: ok")
+
+	if err := runConcurrentQueries(ctx, db, 8); err != nil {
+		return err
+	}
+	stats := db.Stats()
+	fmt.Printf("pool-test stats: open=%d in_use=%d idle=%d wait_count=%d\n", stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
+	fmt.Println("ok: pool-test completed")
+	return nil
+}
+
+func queryOnDedicatedConn(ctx context.Context, db *sql.DB) (string, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get dedicated conn failed: %w", err)
+	}
+	defer conn.Close()
+
+	id, err := rawConnID(ctx, conn)
+	if err != nil {
+		return "", err
+	}
+	var value any
+	if err := conn.QueryRowContext(ctx, defaultQuery).Scan(&value); err != nil {
+		return "", fmt.Errorf("dedicated conn query failed: %w", err)
+	}
+	fmt.Printf("pool-test dedicated-query: conn=%s value=%s\n", id, formatValue(value))
+	return id, nil
+}
+
+func rawConnID(ctx context.Context, conn *sql.Conn) (string, error) {
+	var id string
+	err := conn.Raw(func(driverConn any) error {
+		id = fmt.Sprintf("%p", driverConn)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("raw conn id failed: %w", err)
+	}
+	return id, nil
+}
+
+func closeOneDriverConn(ctx context.Context, db *sql.DB) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("get conn for bad-conn test failed: %w", err)
+	}
+	defer conn.Close()
+
+	var id string
+	if err := conn.Raw(func(driverConn any) error {
+		id = fmt.Sprintf("%p", driverConn)
+		closer, ok := driverConn.(interface{ Close() error })
+		if !ok {
+			return fmt.Errorf("driver conn %T has no Close", driverConn)
+		}
+		return closer.Close()
+	}); err != nil {
+		return fmt.Errorf("close raw driver conn failed: %w", err)
+	}
+	fmt.Printf("pool-test bad-conn-close: conn=%s closed\n", id)
+	return nil
+}
+
+func runConcurrentQueries(ctx context.Context, db *sql.DB, workers int) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			var value any
+			if err := db.QueryRowContext(ctx, "select ? from dual", int64(worker+1)).Scan(&value); err != nil {
+				errCh <- fmt.Errorf("worker %d query failed: %w", worker, err)
+				return
+			}
+			fmt.Printf("pool-test concurrent worker=%d value=%s\n", worker, formatValue(value))
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	fmt.Printf("pool-test concurrent: workers=%d ok\n", workers)
 	return nil
 }
 

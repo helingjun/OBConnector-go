@@ -72,3 +72,12 @@ func TestIsMissingTableError(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+func TestResultValue(t *testing.T) {
+	if got := resultValue(3, nil); got != "3" {
+		t.Fatalf("resultValue = %q", got)
+	}
+	if got := resultValue(0, errString("unsupported")); got != "unknown" {
+		t.Fatalf("resultValue error = %q", got)
+	}
+}
