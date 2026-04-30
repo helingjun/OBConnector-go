@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-04-30
+
+First tagged release for downstream integration (e.g. `go get` / `xixi`).
+
 ### Added
 
 - Pure Go `database/sql` driver (`oceanbase` / `oboracle`) for OceanBase **Oracle** tenants over the MySQL-compatible protocol: handshake with Oracle-mode capability and OB client attributes, `mysql_native_password`, `COM_QUERY`, text result sets, streaming rows, OK/ERR parsing.
@@ -21,6 +25,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - No TLS yet; conservative text-protocol type mapping; no full server-side prepared statements.
 
-## [0.1.0-dev]
-
-Initial public development snapshot (see git history for detailed commits).
+[0.1.0]: https://github.com/helingjun/OBConnector-go/releases/tag/v0.1.0

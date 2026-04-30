@@ -47,7 +47,7 @@ Client capabilities currently enabled when the server advertises them:
 Default client attributes:
 
 - `_client_name=libmariadb`
-- `_client_version=0.1.0-dev`
+- `_client_version` matches driver `Version` constant (e.g. `0.1.0`)
 - `_os=<GOOS>`
 - `_platform=<GOARCH>`
 - `program_name=<argv0>`
