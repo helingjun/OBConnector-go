@@ -1,0 +1,279 @@
+package oceanbase
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const defaultAddr = "127.0.0.1:2881"
+
+type Config struct {
+	Addr           string
+	User           string
+	Password       string
+	Database       string
+	Timeout        time.Duration
+	Attributes     map[string]string
+	CapabilityAdd  uint32
+	CapabilityDrop uint32
+	Collation      byte
+	InitSQL        []string
+	Preset         string
+	Trace          bool
+	TraceWriter    io.Writer
+}
+
+func ParseDSN(dsn string) (*Config, error) {
+	if strings.Contains(dsn, "://") {
+		return parseURLDSN(dsn)
+	}
+	if strings.HasPrefix(dsn, "oceanbase:") || strings.HasPrefix(dsn, "oboracle:") {
+		return parseOpaqueDSN(dsn)
+	}
+	return parseLegacyDSN(dsn)
+}
+
+func (c *Config) normalize() error {
+	if c.Addr == "" {
+		c.Addr = defaultAddr
+	}
+	host, port, err := net.SplitHostPort(c.Addr)
+	if err != nil {
+		if strings.Contains(c.Addr, ":") {
+			return fmt.Errorf("invalid address %q: %w", c.Addr, err)
+		}
+		host = c.Addr
+		port = "2881"
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return fmt.Errorf("invalid port %q: %w", port, err)
+	}
+	c.Addr = net.JoinHostPort(host, port)
+
+	if c.User == "" {
+		return errors.New("missing user")
+	}
+	if c.Timeout == 0 {
+		c.Timeout = 10 * time.Second
+	}
+	if c.Attributes == nil {
+		c.Attributes = map[string]string{}
+	}
+	if c.Collation == 0 {
+		c.Collation = DefaultCollation()
+	}
+	if c.Preset == "" {
+		c.Preset = "default"
+	}
+	if c.Trace && c.TraceWriter == nil {
+		c.TraceWriter = os.Stderr
+	}
+	return nil
+}
+
+func parseURLDSN(dsn string) (*Config, error) {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "oceanbase" && u.Scheme != "oboracle" {
+		return nil, fmt.Errorf("unsupported DSN scheme %q", u.Scheme)
+	}
+
+	cfg := &Config{
+		Addr:       u.Host,
+		Database:   strings.TrimPrefix(u.EscapedPath(), "/"),
+		Attributes: map[string]string{},
+	}
+	if user := u.User; user != nil {
+		cfg.User = user.Username()
+		cfg.Password, _ = user.Password()
+	}
+	if db, err := url.PathUnescape(cfg.Database); err == nil {
+		cfg.Database = db
+	}
+
+	if err := applyQuery(cfg, u.Query()); err != nil {
+		return nil, err
+	}
+
+	return cfg, cfg.normalize()
+}
+
+func parseOpaqueDSN(dsn string) (*Config, error) {
+	_, rest, _ := strings.Cut(dsn, ":")
+	main, rawQuery, _ := strings.Cut(rest, "?")
+	userInfo, hostAndPath, ok := strings.Cut(main, "@")
+	if !ok {
+		return nil, errors.New("opaque dsn must be oceanbase:user:pass@host:port/db")
+	}
+
+	rawUser, rawPassword, ok := strings.Cut(userInfo, ":")
+	if !ok {
+		return nil, errors.New("opaque dsn must include user and password")
+	}
+	user, err := url.QueryUnescape(rawUser)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user escape: %w", err)
+	}
+	password, err := url.QueryUnescape(rawPassword)
+	if err != nil {
+		return nil, fmt.Errorf("invalid password escape: %w", err)
+	}
+
+	addr, rawDB, _ := strings.Cut(hostAndPath, "/")
+	database, err := url.QueryUnescape(rawDB)
+	if err != nil {
+		return nil, fmt.Errorf("invalid database escape: %w", err)
+	}
+	cfg := &Config{
+		Addr:       addr,
+		User:       user,
+		Password:   password,
+		Database:   database,
+		Attributes: map[string]string{},
+	}
+	if rawQuery != "" {
+		values, err := url.ParseQuery(rawQuery)
+		if err != nil {
+			return nil, err
+		}
+		if err := applyQuery(cfg, values); err != nil {
+			return nil, err
+		}
+	}
+	return cfg, cfg.normalize()
+}
+
+func parseLegacyDSN(dsn string) (*Config, error) {
+	// Minimal compatibility with user:pass@tcp(host:port)/db?timeout=5s.
+	cfg := &Config{Addr: defaultAddr, Attributes: map[string]string{}}
+	before, after, ok := strings.Cut(dsn, "@tcp(")
+	if !ok {
+		return nil, errors.New("dsn must be oceanbase://user:pass@host:port/db or user:pass@tcp(host:port)/db")
+	}
+	if user, password, ok := strings.Cut(before, ":"); ok {
+		cfg.User = user
+		cfg.Password = password
+	} else {
+		cfg.User = before
+	}
+
+	addr, rest, ok := strings.Cut(after, ")")
+	if !ok {
+		return nil, errors.New("legacy dsn missing closing )")
+	}
+	cfg.Addr = addr
+	if strings.HasPrefix(rest, "/") {
+		pathAndQuery := strings.TrimPrefix(rest, "/")
+		if db, query, ok := strings.Cut(pathAndQuery, "?"); ok {
+			cfg.Database = db
+			if err := applyLegacyQuery(cfg, query); err != nil {
+				return nil, err
+			}
+		} else {
+			cfg.Database = pathAndQuery
+		}
+	}
+	return cfg, cfg.normalize()
+}
+
+func applyLegacyQuery(cfg *Config, raw string) error {
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return err
+	}
+	return applyQuery(cfg, values)
+}
+
+func applyQuery(cfg *Config, values url.Values) error {
+	if timeout := getQueryValue(values, "timeout", "TIMEOUT", "CONNECT TIMEOUT", "connect timeout"); timeout != "" {
+		d, err := parseTimeout(timeout)
+		if err != nil {
+			return fmt.Errorf("invalid timeout: %w", err)
+		}
+		cfg.Timeout = d
+	}
+	if trace := getQueryValue(values, "trace"); trace != "" {
+		enabled, err := strconv.ParseBool(trace)
+		if err != nil {
+			return fmt.Errorf("invalid trace: %w", err)
+		}
+		cfg.Trace = enabled
+	}
+	if capAdd := getQueryValue(values, "cap.add"); capAdd != "" {
+		v, err := parseUint32(capAdd)
+		if err != nil {
+			return fmt.Errorf("invalid cap.add: %w", err)
+		}
+		cfg.CapabilityAdd = v
+	}
+	if capDrop := getQueryValue(values, "cap.drop"); capDrop != "" {
+		v, err := parseUint32(capDrop)
+		if err != nil {
+			return fmt.Errorf("invalid cap.drop: %w", err)
+		}
+		cfg.CapabilityDrop = v
+	}
+	if collation := getQueryValue(values, "collation"); collation != "" {
+		v, err := strconv.ParseUint(collation, 0, 8)
+		if err != nil {
+			return fmt.Errorf("invalid collation: %w", err)
+		}
+		cfg.Collation = byte(v)
+	}
+	if preset := getQueryValue(values, "preset"); preset != "" {
+		cfg.Preset = preset
+	}
+	cfg.InitSQL = append(cfg.InitSQL, values["init"]...)
+	for key, vals := range values {
+		if strings.HasPrefix(key, "attr.") && len(vals) > 0 {
+			cfg.Attributes[strings.TrimPrefix(key, "attr.")] = vals[len(vals)-1]
+		}
+	}
+	return nil
+}
+
+func getQueryValue(values url.Values, names ...string) string {
+	for _, name := range names {
+		if vals, ok := values[name]; ok && len(vals) > 0 {
+			return vals[len(vals)-1]
+		}
+		for key, vals := range values {
+			if strings.EqualFold(key, name) && len(vals) > 0 {
+				return vals[len(vals)-1]
+			}
+		}
+	}
+	return ""
+}
+
+func parseTimeout(s string) (time.Duration, error) {
+	if d, err := time.ParseDuration(s); err == nil {
+		return d, nil
+	}
+	seconds, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, err
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+func parseUint32(s string) (uint32, error) {
+	v, err := strconv.ParseUint(s, 0, 32)
+	return uint32(v), err
+}
+
+func DefaultCollation() byte {
+	return 45
+}
