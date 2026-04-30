@@ -27,14 +27,14 @@ go run ./cmd/obping \
   -host 127.0.0.1 \
   -port 2881 \
   -user 'user@tenant#cluster' \
-  -password 'secret' \
+  -password '<password>' \
   -trace
 ```
 
 Or pass a DSN directly:
 
 ```bash
-go run ./cmd/obping -dsn 'oceanbase://user:secret@127.0.0.1:2881/?timeout=5s'
+go run ./cmd/obping -dsn 'oceanbase://user:password@127.0.0.1:2881/?timeout=5s'
 ```
 
 Custom connection attributes can be added with `attr.<name>` query parameters:
@@ -47,7 +47,7 @@ The CLI also exposes experiment switches:
 
 ```bash
 go run ./cmd/obping \
-  -dsn 'oceanbase://user:secret@127.0.0.1:2881/?timeout=5s' \
+  -dsn 'oceanbase://user:password@127.0.0.1:2881/?timeout=5s' \
   -trace \
   -query 'select 1 as one from dual' \
   -max-rows 20 \
@@ -61,7 +61,7 @@ Basic transaction validation:
 
 ```bash
 go run ./cmd/obping \
-  -dsn 'oceanbase://user:secret@127.0.0.1:2881/?timeout=5s' \
+  -dsn 'oceanbase://user:password@127.0.0.1:2881/?timeout=5s' \
   -tx-test
 ```
 
@@ -69,7 +69,7 @@ DDL/DML `ExecContext` validation:
 
 ```bash
 go run ./cmd/obping \
-  -dsn 'oceanbase://user:secret@127.0.0.1:2881/?timeout=5s' \
+  -dsn 'oceanbase://user:password@127.0.0.1:2881/?timeout=5s' \
   -exec-test
 ```
 
