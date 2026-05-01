@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/helingjun/obconnector-go"
+	"github.com/helingjun/obconnector-go"
 )
 
 const defaultQuery = "select 1 from dual"
@@ -44,6 +44,7 @@ func main() {
 		execTable = flag.String("exec-table", "", "table name for -exec-test; defaults to a generated OBGO_SMOKE_* name")
 		paramTest = flag.Bool("param-test", false, "run parameterized QueryContext/ExecContext smoke tests")
 		poolTest  = flag.Bool("pool-test", false, "run database/sql pool lifecycle smoke tests")
+		bulkTest  = flag.Bool("bulk-test", false, "run BulkInsert smoke test")
 	)
 	flag.Var(&attrs, "attr", "connection attribute key=value; can be repeated")
 	flag.Var(&initSQL, "init", "initial SQL to run after auth; can be repeated")
@@ -96,6 +97,13 @@ func main() {
 
 	if *poolTest {
 		if err := runPoolTest(ctx, connString); err != nil {
+			exitErr(err)
+		}
+		return
+	}
+
+	if *bulkTest {
+		if err := runBulkTest(ctx, connString, *execTable); err != nil {
 			exitErr(err)
 		}
 		return
@@ -393,6 +401,59 @@ func runPoolTest(ctx context.Context, connString string) error {
 	stats := db.Stats()
 	fmt.Printf("pool-test stats: open=%d in_use=%d idle=%d wait_count=%d\n", stats.OpenConnections, stats.InUse, stats.Idle, stats.WaitCount)
 	fmt.Println("ok: pool-test completed")
+	return nil
+}
+
+func runBulkTest(ctx context.Context, connString string, tableName string) error {
+	db, err := openDB(connString)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tableName, err = smokeTableName(tableName)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("bulk-test table: %s\n", tableName)
+
+	if err := dropTableIgnoreMissing(ctx, db, tableName); err != nil {
+		return err
+	}
+	defer func() {
+		if err := dropTableIgnoreMissing(context.Background(), db, tableName); err != nil {
+			fmt.Fprintf(os.Stderr, "cleanup warning: %v\n", err)
+		}
+	}()
+
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("create table %s (id number, name varchar2(40))", tableName)); err != nil {
+		return err
+	}
+
+	columns := []string{"id", "name"}
+	values := [][]any{
+		{int64(1), "alpha"},
+		{int64(2), "beta"},
+		{int64(3), "gamma"},
+	}
+
+	res, err := oceanbase.BulkInsert(ctx, db, tableName, columns, values)
+	if err != nil {
+		return fmt.Errorf("bulk insert failed: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	fmt.Printf("bulk-insert: rows_affected=%d\n", affected)
+
+	var count int64
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("select count(*) from %s", tableName)).Scan(&count); err != nil {
+		return err
+	}
+	fmt.Printf("bulk-count: %d\n", count)
+	if count != 3 {
+		return fmt.Errorf("expected 3 rows, got %d", count)
+	}
+
+	fmt.Println("ok: bulk-test completed")
 	return nil
 }
 

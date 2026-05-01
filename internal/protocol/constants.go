@@ -46,6 +46,7 @@ const (
 
 const (
 	ServerSessionStateChanged uint16 = 0x4000
+	ServerPSOutParams         uint16 = 0x1000
 )
 
 const (
