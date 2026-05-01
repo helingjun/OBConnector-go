@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/binary"
 	"hash/crc32"
+	"io"
 )
 
 const (
@@ -100,3 +101,35 @@ var crc16Table = func() [256]uint16 {
 func OB20PayloadChecksum(data []byte) uint32 {
 	return crc32.ChecksumIEEE(data)
 }
+
+type OB20ExtraInfo struct {
+	Type uint16
+	Data []byte
+}
+
+func ParseOB20ExtraInfo(data []byte) ([]OB20ExtraInfo, error) {
+	var infos []OB20ExtraInfo
+	pos := 0
+	for pos < len(data) {
+		if len(data[pos:]) < 4 {
+			break
+		}
+		typ := binary.BigEndian.Uint16(data[pos : pos+2])
+		length := int(binary.BigEndian.Uint32(data[pos+2 : pos+6]))
+		pos += 6
+		if len(data[pos:]) < length {
+			return nil, io.ErrUnexpectedEOF
+		}
+		infos = append(infos, OB20ExtraInfo{
+			Type: typ,
+			Data: data[pos : pos+length],
+		})
+		pos += length
+	}
+	return infos, nil
+}
+
+const (
+	OB20ExtraInfoTypeTraceID uint16 = 0x01
+	OB20ExtraInfoTypeSessVar uint16 = 0x02
+)

@@ -87,14 +87,21 @@ func (c *PacketConn) ReadPacket() ([]byte, error) {
 			if len(mysqlPacket) < 4 {
 				return nil, io.ErrUnexpectedEOF
 			}
-			payloadLen := int(mysqlPacket[0]) | int(mysqlPacket[1])<<8 | int(mysqlPacket[2])<<16
+			mysqlLen := int(mysqlPacket[0]) | int(mysqlPacket[1])<<8 | int(mysqlPacket[2])<<16
 			gotSeq := mysqlPacket[3]
 			if gotSeq != c.seq {
 				return nil, fmt.Errorf("unexpected packet sequence: got %d, want %d", gotSeq, c.seq)
 			}
 			c.seq++
-			out = append(out, mysqlPacket[4:]...)
-			if payloadLen < maxPayloadLen {
+
+			// Check for Extra Info
+			if int(h.PayloadLen) > 4+mysqlLen {
+				_ = mysqlPacket[4+mysqlLen:] // Extra Data
+				// In a professional driver, we'd handle TraceID or SessionVar feedback.
+			}
+
+			out = append(out, mysqlPacket[4:4+mysqlLen]...)
+			if mysqlLen < maxPayloadLen {
 				return out, nil
 			}
 		} else {
