@@ -14,6 +14,7 @@ func TestOB20Header(t *testing.T) {
 		PacketSeq:    1,
 		PayloadLen:   100,
 		Flag:         OB20FlagNone,
+		Reserved:     0,
 	}
 
 	var buf [OB20HeaderLen]byte
