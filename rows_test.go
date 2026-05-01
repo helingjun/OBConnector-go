@@ -27,7 +27,7 @@ func TestParseTextRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []driver.Value{"123", "3.14", nil, "hello"}
+	want := []driver.Value{int64(123), 3.14, nil, "hello"}
 	if !reflect.DeepEqual(row, want) {
 		t.Fatalf("row = %#v, want %#v", row, want)
 	}
@@ -41,7 +41,7 @@ func TestRowsColumnTypes(t *testing.T) {
 	if got := rows.ColumnTypeDatabaseTypeName(0); got != "BIGINT" {
 		t.Fatalf("type name = %q", got)
 	}
-	if got := rows.ColumnTypeScanType(0); got != reflect.TypeOf("") {
+	if got := rows.ColumnTypeScanType(0); got != reflect.TypeOf(int64(0)) {
 		t.Fatalf("scan type = %v", got)
 	}
 	if got := rows.ColumnTypeScanType(1); got != reflect.TypeOf([]byte{}) {
@@ -73,7 +73,7 @@ func TestStreamingRowsNextAndRelease(t *testing.T) {
 	if err := rows.Next(dest); err != nil {
 		t.Fatal(err)
 	}
-	if want := []driver.Value{"1", "hello"}; !reflect.DeepEqual(dest, want) {
+	if want := []driver.Value{int64(1), "hello"}; !reflect.DeepEqual(dest, want) {
 		t.Fatalf("dest = %#v, want %#v", dest, want)
 	}
 	if err := rows.Next(dest); err != io.EOF {

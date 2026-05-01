@@ -4,9 +4,30 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 )
 
 const maxPayloadLen = 1<<24 - 1
+
+var bufPool = sync.Pool{
+	New: func() any {
+		return make([]byte, 4096)
+	},
+}
+
+func getBuf(size int) []byte {
+	if size > 4096 {
+		return make([]byte, size)
+	}
+	buf := bufPool.Get().([]byte)
+	return buf[:size]
+}
+
+func putBuf(buf []byte) {
+	if cap(buf) == 4096 {
+		bufPool.Put(buf[:4096])
+	}
+}
 
 type PacketConn struct {
 	rw           io.ReadWriter
@@ -46,6 +67,7 @@ func (c *PacketConn) ReadPacket() ([]byte, error) {
 				return nil, fmt.Errorf("invalid OB 2.0 header")
 			}
 			// In OB 2.0, the payload is the entire MySQL packet (header + payload)
+			// We allocate the payload as before, as it's passed back to the user
 			mysqlPacket := make([]byte, h.PayloadLen)
 			if _, err := io.ReadFull(c.rw, mysqlPacket); err != nil {
 				return nil, err
@@ -105,13 +127,14 @@ func (c *PacketConn) WritePacket(payload []byte) error {
 			chunkLen = maxPayloadLen
 		}
 
-		mysqlHeaderAndPayload := make([]byte, 4+chunkLen)
-		mysqlHeaderAndPayload[0] = byte(chunkLen)
-		mysqlHeaderAndPayload[1] = byte(chunkLen >> 8)
-		mysqlHeaderAndPayload[2] = byte(chunkLen >> 16)
-		mysqlHeaderAndPayload[3] = c.seq
+		// Use pooled buffer for the write payload
+		writeBuf := getBuf(4 + chunkLen)
+		writeBuf[0] = byte(chunkLen)
+		writeBuf[1] = byte(chunkLen >> 8)
+		writeBuf[2] = byte(chunkLen >> 16)
+		writeBuf[3] = c.seq
 		c.seq++
-		copy(mysqlHeaderAndPayload[4:], payload[:chunkLen])
+		copy(writeBuf[4:], payload[:chunkLen])
 
 		if c.ob20 {
 			var obHeaderBuf [OB20HeaderLen]byte
@@ -120,29 +143,31 @@ func (c *PacketConn) WritePacket(payload []byte) error {
 				Version:      OB20Version,
 				ConnectionID: c.connectionID,
 				RequestID:    c.requestID,
-				PacketSeq:    mysqlHeaderAndPayload[3], // Use same seq as MySQL
-				PayloadLen:   uint32(len(mysqlHeaderAndPayload)),
+				PacketSeq:    writeBuf[3],
+				PayloadLen:   uint32(len(writeBuf)),
 			}
 			h.Encode(obHeaderBuf[:])
 			if _, err := c.rw.Write(obHeaderBuf[:]); err != nil {
+				putBuf(writeBuf)
 				return err
 			}
-			if _, err := c.rw.Write(mysqlHeaderAndPayload); err != nil {
+			if _, err := c.rw.Write(writeBuf); err != nil {
+				putBuf(writeBuf)
 				return err
 			}
 			var obTrailer [4]byte
-			binary.BigEndian.PutUint32(obTrailer[:], OB20PayloadChecksum(mysqlHeaderAndPayload))
+			binary.BigEndian.PutUint32(obTrailer[:], OB20PayloadChecksum(writeBuf))
 			if _, err := c.rw.Write(obTrailer[:]); err != nil {
+				putBuf(writeBuf)
 				return err
 			}
 		} else {
-			if _, err := c.rw.Write(mysqlHeaderAndPayload[:4]); err != nil {
-				return err
-			}
-			if _, err := c.rw.Write(mysqlHeaderAndPayload[4:]); err != nil {
+			if _, err := c.rw.Write(writeBuf); err != nil {
+				putBuf(writeBuf)
 				return err
 			}
 		}
+		putBuf(writeBuf)
 
 		payload = payload[chunkLen:]
 		if chunkLen < maxPayloadLen {
@@ -155,7 +180,11 @@ func (c *PacketConn) WritePacket(payload []byte) error {
 }
 
 func (c *PacketConn) writeEmptyContinuation() error {
-	mysqlHeader := make([]byte, 4)
+	mysqlHeader := getBuf(4)
+	defer putBuf(mysqlHeader)
+	mysqlHeader[0] = 0
+	mysqlHeader[1] = 0
+	mysqlHeader[2] = 0
 	mysqlHeader[3] = c.seq
 	c.seq++
 

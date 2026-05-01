@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strconv"
+	"time"
 
 	"github.com/helingjun/obconnector-go/internal/protocol"
 )
@@ -284,7 +286,29 @@ func parseTextRow(packet []byte, columnCount int, types []byte) ([]driver.Value,
 }
 
 func textValue(raw []byte, typ byte) driver.Value {
-	return string(raw)
+	s := string(raw)
+	switch typ {
+	case protocol.ColumnTypeTiny, protocol.ColumnTypeShort, protocol.ColumnTypeLong, protocol.ColumnTypeInt24, protocol.ColumnTypeLongLong:
+		if val, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return val
+		}
+	case protocol.ColumnTypeFloat, protocol.ColumnTypeDouble:
+		if val, err := strconv.ParseFloat(s, 64); err == nil {
+			return val
+		}
+	case protocol.ColumnTypeDate, protocol.ColumnTypeDateTime, protocol.ColumnTypeTimestamp:
+		formats := []string{
+			"2006-01-02 15:04:05.999999999",
+			"2006-01-02 15:04:05",
+			"2006-01-02",
+		}
+		for _, f := range formats {
+			if t, err := time.ParseInLocation(f, s, time.UTC); err == nil {
+				return t
+			}
+		}
+	}
+	return s
 }
 
 func databaseTypeName(typ byte) string {
@@ -350,6 +374,12 @@ func databaseTypeName(typ byte) string {
 
 func scanType(typ byte) reflect.Type {
 	switch typ {
+	case protocol.ColumnTypeTiny, protocol.ColumnTypeShort, protocol.ColumnTypeLong, protocol.ColumnTypeInt24, protocol.ColumnTypeLongLong:
+		return reflect.TypeOf(int64(0))
+	case protocol.ColumnTypeFloat, protocol.ColumnTypeDouble:
+		return reflect.TypeOf(float64(0))
+	case protocol.ColumnTypeDate, protocol.ColumnTypeDateTime, protocol.ColumnTypeTimestamp:
+		return reflect.TypeOf(time.Time{})
 	case protocol.ColumnTypeTinyBlob,
 		protocol.ColumnTypeMediumBlob,
 		protocol.ColumnTypeLongBlob,

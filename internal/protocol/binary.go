@@ -119,7 +119,7 @@ func ParseBinaryValue(data []byte, typ byte) (any, int, error) {
 		return math.Float64frombits(binary.LittleEndian.Uint64(data[:8])), 8, nil
 	case ColumnTypeDate, ColumnTypeTimestamp, ColumnTypeDateTime:
 		return ParseBinaryTime(data)
-	case ColumnTypeVarChar, ColumnTypeVarString, ColumnTypeString, ColumnTypeBlob, ColumnTypeTinyBlob, ColumnTypeMediumBlob, ColumnTypeLongBlob:
+	case ColumnTypeDecimal, ColumnTypeNewDecimal, ColumnTypeVarChar, ColumnTypeVarString, ColumnTypeString, ColumnTypeBlob, ColumnTypeTinyBlob, ColumnTypeMediumBlob, ColumnTypeLongBlob:
 		s, used, _, err := ReadLengthEncodedString(data)
 		if err != nil {
 			return nil, 0, err
