@@ -132,8 +132,9 @@ func ParseOB20ExtraInfo(data []byte) ([]OB20ExtraInfo, error) {
 }
 
 const (
-	OB20ExtraInfoTypeTraceID     uint16 = 0x01
-	OB20ExtraInfoTypeSessVar     uint16 = 0x02
-	OB20ExtraInfoTypeTableID     uint16 = 0x03
-	OB20ExtraInfoTypePartitionID uint16 = 0x04
+	OB20ExtraInfoTypeTraceID     uint16 = 2001
+	OB20ExtraInfoTypeSessVar     uint16 = 2002
+	OB20ExtraInfoTypeFullTrace   uint16 = 2003
+	OB20ExtraInfoTypeTableID     uint16 = 2004
+	OB20ExtraInfoTypePartitionID uint16 = 2005 // Adjusted to follow JDBC pattern
 )
