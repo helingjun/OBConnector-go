@@ -231,6 +231,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		c.mu.Unlock()
 		return nil, err
 	}
+	c.setupExtraInfo(ctx)
 	rows, err := c.queryLocked(ctx, query)
 	if err != nil {
 		c.mu.Unlock()
@@ -255,6 +256,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	if err := c.checkUsableLocked(); err != nil {
 		return nil, err
 	}
+	c.setupExtraInfo(ctx)
 	res, err := c.execLocked(ctx, query)
 	if err != nil {
 		return nil, c.markBadIfConnErr(err)
@@ -468,6 +470,7 @@ func (c *Conn) connectionAttributes(hs *handshake) [][2]string {
 func (c *Conn) stmtQueryLocked(ctx context.Context, stmtID uint32, args []driver.NamedValue) (driver.Rows, error) {
 	var rows driver.Rows
 	err := c.withDeadline(ctx, func() error {
+		c.setupExtraInfo(ctx)
 		if err := c.writeExecute(stmtID, args); err != nil {
 			return err
 		}
@@ -487,6 +490,7 @@ func (c *Conn) stmtQueryLocked(ctx context.Context, stmtID uint32, args []driver
 func (c *Conn) stmtExecLocked(ctx context.Context, stmtID uint32, args []driver.NamedValue) (driver.Result, error) {
 	var result driver.Result
 	err := c.withDeadline(ctx, func() error {
+		c.setupExtraInfo(ctx)
 		if err := c.writeExecute(stmtID, args); err != nil {
 			return err
 		}
@@ -588,6 +592,18 @@ func (c *Conn) writeQuery(query string) error {
 	c.packets.ResetSequence()
 	c.packets.NextRequest()
 	return c.packets.WritePacket(append([]byte{protocol.ComQuery}, query...))
+}
+
+func (c *Conn) setupExtraInfo(ctx context.Context) {
+	c.packets.ClearExtraInfo()
+	if id, ok := partitionIDFromContext(ctx); ok {
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint64(buf, uint64(id))
+		c.packets.AddExtraInfo(protocol.OB20ExtraInfoTypePartitionID, buf)
+	}
+	if id, ok := traceIDFromContext(ctx); ok {
+		c.packets.AddExtraInfo(protocol.OB20ExtraInfoTypeTraceID, []byte(id))
+	}
 }
 
 func (c *Conn) tracef(format string, args ...any) {

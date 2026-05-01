@@ -36,6 +36,7 @@ type PacketConn struct {
 	ob20Magic    uint16
 	connectionID uint32
 	requestID    uint32
+	extraInfos   []OB20ExtraInfo
 }
 
 func NewPacketConn(rw io.ReadWriter) *PacketConn {
@@ -50,6 +51,14 @@ func (c *PacketConn) EnableOB20(connectionID uint32, magic uint16) {
 	c.ob20 = true
 	c.ob20Magic = magic
 	c.connectionID = connectionID
+}
+
+func (c *PacketConn) AddExtraInfo(typ uint16, data []byte) {
+	c.extraInfos = append(c.extraInfos, OB20ExtraInfo{Type: typ, Data: data})
+}
+
+func (c *PacketConn) ClearExtraInfo() {
+	c.extraInfos = nil
 }
 
 func (c *PacketConn) NextRequest() {
@@ -136,8 +145,16 @@ func (c *PacketConn) WritePacket(payload []byte) error {
 			chunkLen = maxPayloadLen
 		}
 
+		mysqlLen := 4 + chunkLen
+		extraLen := 0
+		if c.ob20 {
+			for _, info := range c.extraInfos {
+				extraLen += info.TotalLen()
+			}
+		}
+
 		// Use pooled buffer for the write payload
-		writeBuf := getBuf(4 + chunkLen)
+		writeBuf := getBuf(mysqlLen + extraLen)
 		writeBuf[0] = byte(chunkLen)
 		writeBuf[1] = byte(chunkLen >> 8)
 		writeBuf[2] = byte(chunkLen >> 16)
@@ -146,7 +163,18 @@ func (c *PacketConn) WritePacket(payload []byte) error {
 		copy(writeBuf[4:], payload[:chunkLen])
 
 		if c.ob20 {
+			if extraLen > 0 {
+				pos := mysqlLen
+				for _, info := range c.extraInfos {
+					pos += info.Encode(writeBuf[pos:])
+				}
+			}
+
 			var obHeaderBuf [OB20HeaderLen]byte
+			flag := OB20FlagNone
+			if extraLen > 0 {
+				flag |= OB20FlagExtraInfo
+			}
 			h := OB20Header{
 				MagicNum:     c.ob20Magic,
 				Version:      OB20Version,
@@ -154,6 +182,7 @@ func (c *PacketConn) WritePacket(payload []byte) error {
 				RequestID:    c.requestID,
 				PacketSeq:    writeBuf[3],
 				PayloadLen:   uint32(len(writeBuf)),
+				Flag:         flag,
 			}
 			h.Encode(obHeaderBuf[:])
 			if _, err := c.rw.Write(obHeaderBuf[:]); err != nil {

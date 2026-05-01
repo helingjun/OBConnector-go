@@ -13,9 +13,10 @@ const (
 )
 
 const (
-	OB20FlagNone     uint32 = 0
-	OB20FlagSSL      uint32 = 1 << 0
-	OB20FlagCompress uint32 = 1 << 1
+	OB20FlagNone      uint32 = 0
+	OB20FlagExtraInfo uint32 = 1 << 0
+	OB20FlagSSL       uint32 = 1 << 1
+	OB20FlagCompress  uint32 = 1 << 2
 )
 
 type OB20Header struct {
@@ -107,6 +108,17 @@ type OB20ExtraInfo struct {
 	Data []byte
 }
 
+func (e *OB20ExtraInfo) Encode(buf []byte) int {
+	binary.BigEndian.PutUint16(buf[0:2], e.Type)
+	binary.BigEndian.PutUint32(buf[2:6], uint32(len(e.Data)))
+	copy(buf[6:], e.Data)
+	return 6 + len(e.Data)
+}
+
+func (e *OB20ExtraInfo) TotalLen() int {
+	return 6 + len(e.Data)
+}
+
 func ParseOB20ExtraInfo(data []byte) ([]OB20ExtraInfo, error) {
 	var infos []OB20ExtraInfo
 	pos := 0
@@ -130,6 +142,8 @@ func ParseOB20ExtraInfo(data []byte) ([]OB20ExtraInfo, error) {
 }
 
 const (
-	OB20ExtraInfoTypeTraceID uint16 = 0x01
-	OB20ExtraInfoTypeSessVar uint16 = 0x02
+	OB20ExtraInfoTypeTraceID     uint16 = 0x01
+	OB20ExtraInfoTypeSessVar     uint16 = 0x02
+	OB20ExtraInfoTypeTableID     uint16 = 0x03
+	OB20ExtraInfoTypePartitionID uint16 = 0x04
 )
