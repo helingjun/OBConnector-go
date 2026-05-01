@@ -16,6 +16,7 @@ type Rows struct {
 	values    [][]driver.Value
 	pos       int
 	streaming bool
+	binary    bool
 	done      bool
 	closed    bool
 	release   func()
@@ -81,10 +82,24 @@ func (r *Rows) nextStreaming(dest []driver.Value) error {
 		r.finish()
 		return parseServerError(packet)
 	}
-	row, err := parseTextRow(packet, len(r.columns), r.types)
-	if err != nil {
-		r.finish()
-		return err
+	var row []driver.Value
+	if r.binary {
+		binaryRow, err := protocol.ParseBinaryRow(packet, len(r.columns), r.types)
+		if err != nil {
+			r.finish()
+			return err
+		}
+		row = make([]driver.Value, len(binaryRow))
+		for i, v := range binaryRow {
+			row[i] = v
+		}
+	} else {
+		textRow, err := parseTextRow(packet, len(r.columns), r.types)
+		if err != nil {
+			r.finish()
+			return err
+		}
+		row = textRow
 	}
 	copy(dest, row)
 	return nil

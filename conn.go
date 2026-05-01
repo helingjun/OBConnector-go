@@ -74,7 +74,67 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 	if query == "" {
 		return nil, errors.New("oceanbase: empty statement")
 	}
-	return &Stmt{conn: c, query: query}, nil
+
+	var stmt *Stmt
+	err := c.withDeadline(ctx, func() error {
+		c.packets.ResetSequence()
+		c.packets.NextRequest()
+		if err := c.packets.WritePacket(append([]byte{protocol.ComStmtPrepare}, query...)); err != nil {
+			return err
+		}
+
+		packet, err := c.packets.ReadPacket()
+		if err != nil {
+			return err
+		}
+		if len(packet) == 0 {
+			return io.ErrUnexpectedEOF
+		}
+		if packet[0] == protocol.ErrPacket {
+			return parseServerError(packet)
+		}
+		if packet[0] != protocol.OKPacket {
+			return fmt.Errorf("oceanbase: unexpected prepare response 0x%02x", packet[0])
+		}
+
+		if len(packet) < 12 {
+			return io.ErrUnexpectedEOF
+		}
+		s := &Stmt{
+			conn:        c,
+			query:       query,
+			stmtID:      binary.LittleEndian.Uint32(packet[1:5]),
+			columnCount: int(binary.LittleEndian.Uint16(packet[5:7])),
+			paramCount:  int(binary.LittleEndian.Uint16(packet[7:9])),
+		}
+
+		if s.paramCount > 0 {
+			for i := 0; i < s.paramCount; i++ {
+				if _, err := c.packets.ReadPacket(); err != nil {
+					return err
+				}
+			}
+			if err := c.readEOFOrOK(); err != nil {
+				return err
+			}
+		}
+		if s.columnCount > 0 {
+			for i := 0; i < s.columnCount; i++ {
+				if _, err := c.packets.ReadPacket(); err != nil {
+					return err
+				}
+			}
+			if err := c.readEOFOrOK(); err != nil {
+				return err
+			}
+		}
+		stmt = s
+		return nil
+	})
+	if err != nil {
+		return nil, c.markBadIfConnErr(err)
+	}
+	return stmt, nil
 }
 
 func (c *Conn) Close() error {
@@ -91,6 +151,20 @@ func (c *Conn) Close() error {
 	c.packets.NextRequest()
 	_ = c.packets.WritePacket([]byte{protocol.ComQuit})
 	return c.netConn.Close()
+}
+
+func (c *Conn) closeStmt(stmtID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.bad {
+		return nil
+	}
+	c.packets.ResetSequence()
+	c.packets.NextRequest()
+	payload := make([]byte, 5)
+	payload[0] = protocol.ComStmtClose
+	binary.LittleEndian.PutUint32(payload[1:], stmtID)
+	return c.packets.WritePacket(payload)
 }
 
 func (c *Conn) IsValid() bool {
@@ -339,6 +413,88 @@ func (c *Conn) connectionAttributes(hs *handshake) [][2]string {
 		attrs = append(attrs, [2]string{k, attrMap[k]})
 	}
 	return attrs
+}
+
+func (c *Conn) stmtQueryLocked(ctx context.Context, stmtID uint32, args []driver.NamedValue) (driver.Rows, error) {
+	var rows driver.Rows
+	err := c.withDeadline(ctx, func() error {
+		if err := c.writeExecute(stmtID, args); err != nil {
+			return err
+		}
+		r, err := c.readQueryResult()
+		if err != nil {
+			return err
+		}
+		if res, ok := r.(*Rows); ok {
+			res.binary = true
+		}
+		rows = r
+		return nil
+	})
+	return rows, err
+}
+
+func (c *Conn) stmtExecLocked(ctx context.Context, stmtID uint32, args []driver.NamedValue) (driver.Result, error) {
+	var result driver.Result
+	err := c.withDeadline(ctx, func() error {
+		if err := c.writeExecute(stmtID, args); err != nil {
+			return err
+		}
+		first, err := c.packets.ReadPacket()
+		if err != nil {
+			return err
+		}
+		res, err := c.readResultFromFirstPacket(first)
+		if err != nil {
+			return err
+		}
+		result = res
+		return nil
+	})
+	return result, err
+}
+
+func (c *Conn) writeExecute(stmtID uint32, args []driver.NamedValue) error {
+	c.packets.ResetSequence()
+	c.packets.NextRequest()
+
+	// COM_STMT_EXECUTE
+	// 0x17 (1) + StmtID (4) + Flags (1) + Iteration (4)
+	payload := make([]byte, 10)
+	payload[0] = protocol.ComStmtExecute
+	binary.LittleEndian.PutUint32(payload[1:5], stmtID)
+	payload[5] = 0 // Flags: CURSOR_TYPE_READ_ONLY = 0
+	binary.LittleEndian.PutUint32(payload[6:10], 1)
+
+	if len(args) > 0 {
+		// NULL bitmap
+		nullBitmap := make([]byte, (len(args)+7)/8)
+		newParamsBound := byte(1)
+		paramTypes := make([]byte, len(args)*2)
+		var paramValues []byte
+
+		for i, arg := range args {
+			if arg.Value == nil {
+				nullBitmap[i/8] |= 1 << (uint(i) % 8)
+			}
+			typ := protocol.GetBinaryParamType(arg.Value)
+			paramTypes[i*2] = typ
+			paramTypes[i*2+1] = 0 // unsigned flag
+
+			var err error
+			paramValues, err = protocol.AppendBinaryParam(paramValues, typ, arg.Value)
+			if err != nil {
+				return err
+			}
+		}
+
+		payload = append(payload, nullBitmap...)
+		payload = append(payload, newParamsBound)
+		payload = append(payload, paramTypes...)
+		payload = append(payload, paramValues...)
+	}
+
+	return c.packets.WritePacket(payload)
 }
 
 func (c *Conn) queryLocked(ctx context.Context, query string) (driver.Rows, error) {

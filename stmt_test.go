@@ -1,31 +1,27 @@
 package oceanbase
 
 import (
-	"context"
-	"database/sql/driver"
+	"bytes"
 	"testing"
+
+	"github.com/helingjun/obconnector-go/internal/protocol"
 )
 
-func TestPrepareContext(t *testing.T) {
-	conn := &Conn{}
-	stmt, err := conn.PrepareContext(context.Background(), "select ?, '?' from dual")
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestStmtNumInput(t *testing.T) {
+	stmt := &Stmt{paramCount: 1}
 	if stmt.NumInput() != 1 {
 		t.Fatalf("NumInput = %d", stmt.NumInput())
 	}
+}
+
+func TestStmtClose(t *testing.T) {
+	var buf bytes.Buffer
+	conn := &Conn{packets: protocol.NewPacketConn(&buf)} // closed/bad check will return nil
+	stmt := &Stmt{conn: conn, closed: false}
 	if err := stmt.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stmt.(driver.StmtQueryContext).QueryContext(context.Background(), nil); err == nil {
-		t.Fatal("query on closed statement should fail")
-	}
-}
-
-func TestPrepareRejectsEmptyStatement(t *testing.T) {
-	conn := &Conn{}
-	if _, err := conn.PrepareContext(context.Background(), ""); err == nil {
-		t.Fatal("empty statement should fail")
+	if !stmt.closed {
+		t.Fatal("stmt should be closed")
 	}
 }

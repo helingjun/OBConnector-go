@@ -7,18 +7,27 @@ import (
 )
 
 type Stmt struct {
-	conn   *Conn
-	query  string
-	closed bool
+	conn        *Conn
+	query       string
+	stmtID      uint32
+	paramCount  int
+	columnCount int
+	closed      bool
 }
 
 func (s *Stmt) Close() error {
+	if s.closed {
+		return nil
+	}
 	s.closed = true
-	return nil
+	if s.conn == nil || s.conn.closed || s.conn.bad {
+		return nil
+	}
+	return s.conn.closeStmt(s.stmtID)
 }
 
 func (s *Stmt) NumInput() int {
-	return countPlaceholders(s.query)
+	return s.paramCount
 }
 
 func (s *Stmt) Exec(args []driver.Value) (driver.Result, error) {
@@ -33,12 +42,36 @@ func (s *Stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (drive
 	if s.closed {
 		return nil, errors.New("oceanbase: statement is closed")
 	}
-	return s.conn.ExecContext(ctx, s.query, args)
+	s.conn.mu.Lock()
+	defer s.conn.mu.Unlock()
+	if err := s.conn.checkUsableLocked(); err != nil {
+		return nil, err
+	}
+	res, err := s.conn.stmtExecLocked(ctx, s.stmtID, args)
+	if err != nil {
+		return nil, s.conn.markBadIfConnErr(err)
+	}
+	return res, nil
 }
 
 func (s *Stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
 	if s.closed {
 		return nil, errors.New("oceanbase: statement is closed")
 	}
-	return s.conn.QueryContext(ctx, s.query, args)
+	s.conn.mu.Lock()
+	if err := s.conn.checkUsableLocked(); err != nil {
+		s.conn.mu.Unlock()
+		return nil, err
+	}
+	rows, err := s.conn.stmtQueryLocked(ctx, s.stmtID, args)
+	if err != nil {
+		s.conn.mu.Unlock()
+		return nil, s.conn.markBadIfConnErr(err)
+	}
+	if r, ok := rows.(*Rows); ok && r.streaming {
+		r.release = s.conn.mu.Unlock
+	} else {
+		s.conn.mu.Unlock()
+	}
+	return rows, nil
 }

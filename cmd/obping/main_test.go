@@ -6,7 +6,7 @@ import (
 )
 
 func TestApplyExperimentParamsOpaqueDSN(t *testing.T) {
-	dsn, err := applyExperimentParams("oceanbase:u:p@127.0.0.1:2883/db?TIMEOUT=5", true, "", "", "", "oboracle", nil, nil)
+	dsn, err := applyExperimentParams("oceanbase:u:p@127.0.0.1:2883/db?TIMEOUT=5", true, "", "", "", "oboracle", false, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

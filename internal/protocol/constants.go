@@ -34,6 +34,10 @@ const (
 	DefaultCollationUTF8MB4Bin       byte   = 46
 	ComQuit                          byte   = 0x01
 	ComQuery                         byte   = 0x03
+	ComStmtPrepare                   byte   = 0x16
+	ComStmtExecute                   byte   = 0x17
+	ComStmtClose                     byte   = 0x19
+	ComStmtReset                     byte   = 0x1a
 	OKPacket                         byte   = 0x00
 	ErrPacket                        byte   = 0xff
 	EOFPacket                        byte   = 0xfe
