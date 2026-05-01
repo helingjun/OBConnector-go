@@ -28,6 +28,7 @@ type Config struct {
 	Preset         string
 	Trace          bool
 	TraceWriter    io.Writer
+	ProtocolV2     bool
 }
 
 func ParseDSN(dsn string) (*Config, error) {
@@ -234,6 +235,13 @@ func applyQuery(cfg *Config, values url.Values) error {
 	}
 	if preset := getQueryValue(values, "preset"); preset != "" {
 		cfg.Preset = preset
+	}
+	if v2 := getQueryValue(values, "ob20", "protocol.v2"); v2 != "" {
+		enabled, err := strconv.ParseBool(v2)
+		if err != nil {
+			return fmt.Errorf("invalid ob20: %w", err)
+		}
+		cfg.ProtocolV2 = enabled
 	}
 	cfg.InitSQL = append(cfg.InitSQL, values["init"]...)
 	for key, vals := range values {

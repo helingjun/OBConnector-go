@@ -88,6 +88,7 @@ func (c *Conn) Close() error {
 		return nil
 	}
 	c.packets.ResetSequence()
+	c.packets.NextRequest()
 	_ = c.packets.WritePacket([]byte{protocol.ComQuit})
 	return c.netConn.Close()
 }
@@ -237,6 +238,10 @@ func (c *Conn) handshake() error {
 	switch authResult[0] {
 	case protocol.OKPacket:
 		c.tracef("auth result: OK")
+		if c.cfg.ProtocolV2 {
+			c.tracef("enabling OB 2.0 protocol encapsulation (ConnectionID: %d)", hs.connectionID)
+			c.packets.EnableOB20(hs.connectionID)
+		}
 		return nil
 	case protocol.ErrPacket:
 		c.tracef("auth result: ERR")
@@ -375,6 +380,7 @@ func (c *Conn) execLocked(ctx context.Context, query string) (driver.Result, err
 func (c *Conn) writeQuery(query string) error {
 	c.tracef("query: %s", query)
 	c.packets.ResetSequence()
+	c.packets.NextRequest()
 	return c.packets.WritePacket(append([]byte{protocol.ComQuery}, query...))
 }
 

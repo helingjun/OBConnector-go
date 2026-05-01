@@ -9,8 +9,11 @@ import (
 const maxPayloadLen = 1<<24 - 1
 
 type PacketConn struct {
-	rw  io.ReadWriter
-	seq byte
+	rw           io.ReadWriter
+	seq          byte
+	ob20         bool
+	connectionID uint32
+	requestID    uint32
 }
 
 func NewPacketConn(rw io.ReadWriter) *PacketConn {
@@ -21,28 +24,76 @@ func (c *PacketConn) ResetSequence() {
 	c.seq = 0
 }
 
+func (c *PacketConn) EnableOB20(connectionID uint32) {
+	c.ob20 = true
+	c.connectionID = connectionID
+}
+
+func (c *PacketConn) NextRequest() {
+	c.requestID++
+}
+
 func (c *PacketConn) ReadPacket() ([]byte, error) {
 	var out []byte
 	for {
-		var header [4]byte
-		if _, err := io.ReadFull(c.rw, header[:]); err != nil {
-			return nil, err
-		}
+		if c.ob20 {
+			var obHeader [OB20HeaderLen]byte
+			if _, err := io.ReadFull(c.rw, obHeader[:]); err != nil {
+				return nil, err
+			}
+			var h OB20Header
+			if !h.Decode(obHeader[:]) {
+				return nil, fmt.Errorf("invalid OB 2.0 header")
+			}
+			// In OB 2.0, the payload is the entire MySQL packet (header + payload)
+			mysqlPacket := make([]byte, h.PayloadLen)
+			if _, err := io.ReadFull(c.rw, mysqlPacket); err != nil {
+				return nil, err
+			}
+			var obTrailer [4]byte
+			if _, err := io.ReadFull(c.rw, obTrailer[:]); err != nil {
+				return nil, err
+			}
+			expectedChecksum := binary.BigEndian.Uint32(obTrailer[:])
+			if OB20PayloadChecksum(mysqlPacket) != expectedChecksum {
+				return nil, fmt.Errorf("invalid OB 2.0 payload checksum")
+			}
 
-		payloadLen := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
-		gotSeq := header[3]
-		if gotSeq != c.seq {
-			return nil, fmt.Errorf("unexpected packet sequence: got %d, want %d", gotSeq, c.seq)
-		}
-		c.seq++
+			// Extract the MySQL payload from the MySQL packet
+			if len(mysqlPacket) < 4 {
+				return nil, io.ErrUnexpectedEOF
+			}
+			payloadLen := int(mysqlPacket[0]) | int(mysqlPacket[1])<<8 | int(mysqlPacket[2])<<16
+			gotSeq := mysqlPacket[3]
+			if gotSeq != c.seq {
+				return nil, fmt.Errorf("unexpected packet sequence: got %d, want %d", gotSeq, c.seq)
+			}
+			c.seq++
+			out = append(out, mysqlPacket[4:]...)
+			if payloadLen < maxPayloadLen {
+				return out, nil
+			}
+		} else {
+			var header [4]byte
+			if _, err := io.ReadFull(c.rw, header[:]); err != nil {
+				return nil, err
+			}
 
-		payload := make([]byte, payloadLen)
-		if _, err := io.ReadFull(c.rw, payload); err != nil {
-			return nil, err
-		}
-		out = append(out, payload...)
-		if payloadLen < maxPayloadLen {
-			return out, nil
+			payloadLen := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
+			gotSeq := header[3]
+			if gotSeq != c.seq {
+				return nil, fmt.Errorf("unexpected packet sequence: got %d, want %d", gotSeq, c.seq)
+			}
+			c.seq++
+
+			payload := make([]byte, payloadLen)
+			if _, err := io.ReadFull(c.rw, payload); err != nil {
+				return nil, err
+			}
+			out = append(out, payload...)
+			if payloadLen < maxPayloadLen {
+				return out, nil
+			}
 		}
 	}
 }
@@ -54,18 +105,43 @@ func (c *PacketConn) WritePacket(payload []byte) error {
 			chunkLen = maxPayloadLen
 		}
 
-		var header [4]byte
-		header[0] = byte(chunkLen)
-		header[1] = byte(chunkLen >> 8)
-		header[2] = byte(chunkLen >> 16)
-		header[3] = c.seq
+		mysqlHeaderAndPayload := make([]byte, 4+chunkLen)
+		mysqlHeaderAndPayload[0] = byte(chunkLen)
+		mysqlHeaderAndPayload[1] = byte(chunkLen >> 8)
+		mysqlHeaderAndPayload[2] = byte(chunkLen >> 16)
+		mysqlHeaderAndPayload[3] = c.seq
 		c.seq++
+		copy(mysqlHeaderAndPayload[4:], payload[:chunkLen])
 
-		if _, err := c.rw.Write(header[:]); err != nil {
-			return err
-		}
-		if _, err := c.rw.Write(payload[:chunkLen]); err != nil {
-			return err
+		if c.ob20 {
+			var obHeaderBuf [OB20HeaderLen]byte
+			h := OB20Header{
+				MagicNum:     OB20MagicNum,
+				Version:      OB20Version,
+				ConnectionID: c.connectionID,
+				RequestID:    c.requestID,
+				PacketSeq:    mysqlHeaderAndPayload[3], // Use same seq as MySQL
+				PayloadLen:   uint32(len(mysqlHeaderAndPayload)),
+			}
+			h.Encode(obHeaderBuf[:])
+			if _, err := c.rw.Write(obHeaderBuf[:]); err != nil {
+				return err
+			}
+			if _, err := c.rw.Write(mysqlHeaderAndPayload); err != nil {
+				return err
+			}
+			var obTrailer [4]byte
+			binary.BigEndian.PutUint32(obTrailer[:], OB20PayloadChecksum(mysqlHeaderAndPayload))
+			if _, err := c.rw.Write(obTrailer[:]); err != nil {
+				return err
+			}
+		} else {
+			if _, err := c.rw.Write(mysqlHeaderAndPayload[:4]); err != nil {
+				return err
+			}
+			if _, err := c.rw.Write(mysqlHeaderAndPayload[4:]); err != nil {
+				return err
+			}
 		}
 
 		payload = payload[chunkLen:]
@@ -79,9 +155,33 @@ func (c *PacketConn) WritePacket(payload []byte) error {
 }
 
 func (c *PacketConn) writeEmptyContinuation() error {
-	var header [4]byte
-	binary.LittleEndian.PutUint32(header[:], uint32(c.seq)<<24)
+	mysqlHeader := make([]byte, 4)
+	mysqlHeader[3] = c.seq
 	c.seq++
-	_, err := c.rw.Write(header[:])
+
+	if c.ob20 {
+		var obHeaderBuf [OB20HeaderLen]byte
+		h := OB20Header{
+			MagicNum:     OB20MagicNum,
+			Version:      OB20Version,
+			ConnectionID: c.connectionID,
+			RequestID:    c.requestID,
+			PacketSeq:    mysqlHeader[3],
+			PayloadLen:   uint32(len(mysqlHeader)),
+		}
+		h.Encode(obHeaderBuf[:])
+		if _, err := c.rw.Write(obHeaderBuf[:]); err != nil {
+			return err
+		}
+		if _, err := c.rw.Write(mysqlHeader); err != nil {
+			return err
+		}
+		var obTrailer [4]byte
+		binary.BigEndian.PutUint32(obTrailer[:], OB20PayloadChecksum(mysqlHeader))
+		_, err := c.rw.Write(obTrailer[:])
+		return err
+	}
+
+	_, err := c.rw.Write(mysqlHeader)
 	return err
 }

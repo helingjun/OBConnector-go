@@ -35,6 +35,7 @@ func main() {
 		capDrop   = flag.String("cap-drop", "", "capability bits to force off, for example 0x100000")
 		collation = flag.String("collation", "", "handshake collation id, for example 45")
 		preset    = flag.String("preset", "", "client identity preset: default, oboracle, obclient, libobclient, connector-c, connector-j")
+		ob20      = flag.Bool("ob20", false, "enable OB 2.0 protocol encapsulation")
 		probe     = flag.Bool("probe-presets", false, "try all built-in client identity presets until one succeeds")
 		query     = flag.String("query", defaultQuery, "query to execute")
 		maxRows   = flag.Int("max-rows", 20, "maximum rows to print for non-default queries")
@@ -54,10 +55,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "missing -user or -dsn")
 			os.Exit(2)
 		}
-		connString = buildDSN(*user, *pass, *host, *port, *dbName, *timeout, *trace, *capAdd, *capDrop, *collation, *preset, attrs, initSQL)
+		connString = buildDSN(*user, *pass, *host, *port, *dbName, *timeout, *trace, *capAdd, *capDrop, *collation, *preset, *ob20, attrs, initSQL)
 	} else {
 		var err error
-		connString, err = applyExperimentParams(connString, *trace, *capAdd, *capDrop, *collation, *preset, attrs, initSQL)
+		connString, err = applyExperimentParams(connString, *trace, *capAdd, *capDrop, *collation, *preset, *ob20, attrs, initSQL)
 		if err != nil {
 			exitErr(err)
 		}
@@ -140,7 +141,7 @@ func probePresets(ctx context.Context, baseDSN string) error {
 	presets := []string{"default", "oboracle", "obclient", "libobclient", "connector-c", "connector-j"}
 	var lastErr error
 	for _, preset := range presets {
-		dsn, err := applyExperimentParams(baseDSN, false, "", "", "", preset, nil, nil)
+		dsn, err := applyExperimentParams(baseDSN, false, "", "", "", preset, false, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -568,21 +569,21 @@ func (f *repeatedFlag) Set(value string) error {
 	return nil
 }
 
-func buildDSN(user, password, host, port, database string, timeout time.Duration, trace bool, capAdd, capDrop, collation, preset string, attrs, initSQL []string) string {
+func buildDSN(user, password, host, port, database string, timeout time.Duration, trace bool, capAdd, capDrop, collation, preset string, ob20 bool, attrs, initSQL []string) string {
 	u := &url.URL{
 		Scheme: "oceanbase",
 		User:   url.UserPassword(user, password),
 		Host:   net.JoinHostPort(host, port),
 		Path:   database,
 	}
-	values, _ := experimentValues(trace, capAdd, capDrop, collation, preset, attrs, initSQL)
+	values, _ := experimentValues(trace, capAdd, capDrop, collation, preset, ob20, attrs, initSQL)
 	values.Set("timeout", timeout.String())
 	u.RawQuery = values.Encode()
 	return u.String()
 }
 
-func applyExperimentParams(dsn string, trace bool, capAdd, capDrop, collation, preset string, attrs, initSQL []string) (string, error) {
-	values, changed := experimentValues(trace, capAdd, capDrop, collation, preset, attrs, initSQL)
+func applyExperimentParams(dsn string, trace bool, capAdd, capDrop, collation, preset string, ob20 bool, attrs, initSQL []string) (string, error) {
+	values, changed := experimentValues(trace, capAdd, capDrop, collation, preset, ob20, attrs, initSQL)
 	if !strings.Contains(dsn, "://") {
 		if strings.HasPrefix(dsn, "oceanbase:") || strings.HasPrefix(dsn, "oboracle:") {
 			if !changed {
@@ -610,10 +611,13 @@ func applyExperimentParams(dsn string, trace bool, capAdd, capDrop, collation, p
 	return u.String(), nil
 }
 
-func experimentValues(trace bool, capAdd, capDrop, collation, preset string, attrs, initSQL []string) (url.Values, bool) {
+func experimentValues(trace bool, capAdd, capDrop, collation, preset string, ob20 bool, attrs, initSQL []string) (url.Values, bool) {
 	values := url.Values{}
 	if trace {
 		values.Set("trace", "true")
+	}
+	if ob20 {
+		values.Set("ob20", "true")
 	}
 	if capAdd != "" {
 		values.Set("cap.add", capAdd)
