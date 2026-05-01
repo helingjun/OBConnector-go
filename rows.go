@@ -288,14 +288,25 @@ func parseTextRow(packet []byte, columnCount int, types []byte) ([]driver.Value,
 func textValue(raw []byte, typ byte) driver.Value {
 	s := string(raw)
 	switch typ {
-	case protocol.ColumnTypeTiny, protocol.ColumnTypeShort, protocol.ColumnTypeLong, protocol.ColumnTypeInt24, protocol.ColumnTypeLongLong:
+	case protocol.ColumnTypeTiny, protocol.ColumnTypeShort, protocol.ColumnTypeLong, protocol.ColumnTypeInt24:
+		if val, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return val
+		}
+	case protocol.ColumnTypeLongLong:
 		if val, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return val
 		}
 	case protocol.ColumnTypeFloat, protocol.ColumnTypeDouble:
+		// For Oracle mode, NUMBER can be reported as DOUBLE.
+		// To be safe and match Connector/J, we could return string for everything.
+		// But for standard MySQL FLOAT/DOUBLE, float64 is expected.
+		// For now, let's keep float64 but allow user to scan into string.
 		if val, err := strconv.ParseFloat(s, 64); err == nil {
 			return val
 		}
+	case protocol.ColumnTypeDecimal, protocol.ColumnTypeNewDecimal:
+		// Always return string for Decimal to preserve precision
+		return s
 	case protocol.ColumnTypeDate, protocol.ColumnTypeDateTime, protocol.ColumnTypeTimestamp:
 		formats := []string{
 			"2006-01-02 15:04:05.999999999",
@@ -378,6 +389,8 @@ func scanType(typ byte) reflect.Type {
 		return reflect.TypeOf(int64(0))
 	case protocol.ColumnTypeFloat, protocol.ColumnTypeDouble:
 		return reflect.TypeOf(float64(0))
+	case protocol.ColumnTypeDecimal, protocol.ColumnTypeNewDecimal:
+		return reflect.TypeOf("")
 	case protocol.ColumnTypeDate, protocol.ColumnTypeDateTime, protocol.ColumnTypeTimestamp:
 		return reflect.TypeOf(time.Time{})
 	case protocol.ColumnTypeTinyBlob,
