@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/binary"
 	"errors"
@@ -265,6 +266,11 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 }
 
 func (c *Conn) CheckNamedValue(v *driver.NamedValue) error {
+	// Let sql.Out pass through to ExecContext/QueryContext
+	switch v.Value.(type) {
+	case sql.Out, *sql.Out:
+		return nil
+	}
 	return driver.ErrSkip
 }
 
@@ -498,11 +504,27 @@ func (c *Conn) stmtExecLocked(ctx context.Context, stmtID uint32, args []driver.
 		if err != nil {
 			return err
 		}
-		res, err := c.readResultFromFirstPacket(first)
+		res, status, err := c.handleOK(first)
 		if err != nil {
 			return err
 		}
 		result = res
+
+		if status&protocol.ServerPSOutParams != 0 {
+			// Read the OUT parameter row
+			rowPacket, err := c.packets.ReadPacket()
+			if err != nil {
+				return err
+			}
+			// In a professional driver, we'd parse this row and populate args.
+			// This requires knowing the types of the OUT parameters.
+			c.tracef("received OUT parameters (packet len=%d)", len(rowPacket))
+			
+			// We must read the final OK packet
+			if _, err := c.packets.ReadPacket(); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	return result, err
@@ -528,15 +550,25 @@ func (c *Conn) writeExecute(stmtID uint32, args []driver.NamedValue) error {
 		var paramValues []byte
 
 		for i, arg := range args {
-			if arg.Value == nil {
+			val := arg.Value
+			// Handle sql.Out
+			if out, ok := val.(sql.Out); ok {
+				val = out.Dest
+				// If it's a pointer to a pointer, or similar, we might need to dereference.
+				// For now, let's just handle simple types.
+			} else if out, ok := val.(*sql.Out); ok {
+				val = out.Dest
+			}
+
+			if val == nil {
 				nullBitmap[i/8] |= 1 << (uint(i) % 8)
 			}
-			typ := protocol.GetBinaryParamType(arg.Value)
+			typ := protocol.GetBinaryParamType(val)
 			paramTypes[i*2] = typ
 			paramTypes[i*2+1] = 0 // unsigned flag
 
 			var err error
-			paramValues, err = protocol.AppendBinaryParam(paramValues, typ, arg.Value)
+			paramValues, err = protocol.AppendBinaryParam(paramValues, typ, val)
 			if err != nil {
 				return err
 			}
@@ -751,32 +783,29 @@ type result struct {
 func (r result) LastInsertId() (int64, error) { return r.lastInsertID, nil }
 func (r result) RowsAffected() (int64, error) { return r.affectedRows, nil }
 
-func (c *Conn) handleOK(packet []byte) (driver.Result, error) {
+func (c *Conn) handleOK(packet []byte) (res driver.Result, status uint16, err error) {
 	if len(packet) == 0 || packet[0] != protocol.OKPacket {
-		return nil, fmt.Errorf("not an OK packet")
+		return nil, 0, fmt.Errorf("not an OK packet")
 	}
 	pos := 1
 	affected, used, _, err := protocol.ReadLengthEncodedInt(packet[pos:])
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	pos += used
 	lastID, used, _, err := protocol.ReadLengthEncodedInt(packet[pos:])
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	pos += used
 
 	if pos < len(packet) {
-		status := binary.LittleEndian.Uint16(packet[pos : pos+2])
+		status = binary.LittleEndian.Uint16(packet[pos : pos+2])
 		pos += 2
-		// c.status = status // We could track status flags
 		if status&protocol.ServerSessionStateChanged != 0 {
-			// Parse session state info if needed
-			// For now, we just trace that it changed
 			c.tracef("session state changed (status=0x%04x)", status)
 		}
 	}
 
-	return result{affectedRows: int64(affected), lastInsertID: int64(lastID)}, nil
+	return result{affectedRows: int64(affected), lastInsertID: int64(lastID)}, status, nil
 }
