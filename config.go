@@ -30,6 +30,7 @@ type Config struct {
 	Trace          bool
 	TraceWriter    io.Writer
 	ProtocolV2     bool
+	OB20Magic      uint16
 	TLSConfig      *tls.Config
 }
 
@@ -244,6 +245,13 @@ func applyQuery(cfg *Config, values url.Values) error {
 			return fmt.Errorf("invalid ob20: %w", err)
 		}
 		cfg.ProtocolV2 = enabled
+	}
+	if magic := getQueryValue(values, "ob20.magic"); magic != "" {
+		v, err := strconv.ParseUint(magic, 0, 16)
+		if err != nil {
+			return fmt.Errorf("invalid ob20.magic: %w", err)
+		}
+		cfg.OB20Magic = uint16(v)
 	}
 	if tlsVal := getQueryValue(values, "tls"); tlsVal != "" {
 		switch tlsVal {

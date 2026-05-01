@@ -333,8 +333,12 @@ func (c *Conn) handshake() error {
 	case protocol.OKPacket:
 		c.tracef("auth result: OK")
 		if c.cfg.ProtocolV2 {
-			c.tracef("enabling OB 2.0 protocol encapsulation (ConnectionID: %d)", hs.connectionID)
-			c.packets.EnableOB20(hs.connectionID)
+			magic := protocol.OB20MagicNum
+			if c.cfg.OB20Magic != 0 {
+				magic = c.cfg.OB20Magic
+			}
+			c.tracef("enabling OB 2.0 protocol encapsulation (ConnectionID: %d, Magic: 0x%04x)", hs.connectionID, magic)
+			c.packets.EnableOB20(hs.connectionID, magic)
 		}
 		return nil
 	case protocol.ErrPacket:

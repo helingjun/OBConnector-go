@@ -33,6 +33,7 @@ type PacketConn struct {
 	rw           io.ReadWriter
 	seq          byte
 	ob20         bool
+	ob20Magic    uint16
 	connectionID uint32
 	requestID    uint32
 }
@@ -45,8 +46,9 @@ func (c *PacketConn) ResetSequence() {
 	c.seq = 0
 }
 
-func (c *PacketConn) EnableOB20(connectionID uint32) {
+func (c *PacketConn) EnableOB20(connectionID uint32, magic uint16) {
 	c.ob20 = true
+	c.ob20Magic = magic
 	c.connectionID = connectionID
 }
 
@@ -139,7 +141,7 @@ func (c *PacketConn) WritePacket(payload []byte) error {
 		if c.ob20 {
 			var obHeaderBuf [OB20HeaderLen]byte
 			h := OB20Header{
-				MagicNum:     OB20MagicNum,
+				MagicNum:     c.ob20Magic,
 				Version:      OB20Version,
 				ConnectionID: c.connectionID,
 				RequestID:    c.requestID,
@@ -188,17 +190,17 @@ func (c *PacketConn) writeEmptyContinuation() error {
 	mysqlHeader[3] = c.seq
 	c.seq++
 
-	if c.ob20 {
-		var obHeaderBuf [OB20HeaderLen]byte
-		h := OB20Header{
-			MagicNum:     OB20MagicNum,
-			Version:      OB20Version,
-			ConnectionID: c.connectionID,
-			RequestID:    c.requestID,
-			PacketSeq:    mysqlHeader[3],
-			PayloadLen:   uint32(len(mysqlHeader)),
-		}
-		h.Encode(obHeaderBuf[:])
+		if c.ob20 {
+			var obHeaderBuf [OB20HeaderLen]byte
+			h := OB20Header{
+				MagicNum:     c.ob20Magic,
+				Version:      OB20Version,
+				ConnectionID: c.connectionID,
+				RequestID:    c.requestID,
+				PacketSeq:    mysqlHeader[3],
+				PayloadLen:   uint32(len(mysqlHeader)),
+			}
+			h.Encode(obHeaderBuf[:])
 		if _, err := c.rw.Write(obHeaderBuf[:]); err != nil {
 			return err
 		}
