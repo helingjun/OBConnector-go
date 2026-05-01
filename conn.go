@@ -519,7 +519,7 @@ func (c *Conn) stmtExecLocked(ctx context.Context, stmtID uint32, args []driver.
 			// In a professional driver, we'd parse this row and populate args.
 			// This requires knowing the types of the OUT parameters.
 			c.tracef("received OUT parameters (packet len=%d)", len(rowPacket))
-			
+
 			// We must read the final OK packet
 			if _, err := c.packets.ReadPacket(); err != nil {
 				return err

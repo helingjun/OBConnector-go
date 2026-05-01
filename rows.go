@@ -290,10 +290,10 @@ func textValue(raw []byte, typ byte) driver.Value {
 	s := string(raw)
 	switch typ {
 	case protocol.ColumnTypeTiny, protocol.ColumnTypeShort, protocol.ColumnTypeLong, protocol.ColumnTypeInt24:
-		// Note: ColumnTypeLong is also ColumnTypeOracleNumber (3). 
+		// Note: ColumnTypeLong is also ColumnTypeOracleNumber (3).
 		// In Oracle mode, we prefer string to preserve precision.
 		// However, without knowing the mode here, we might have a conflict.
-		// For now, let's assume if it can be parsed as int64, it's fine, 
+		// For now, let's assume if it can be parsed as int64, it's fine,
 		// but Oracle NUMBER often exceeds int64.
 		if val, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return val

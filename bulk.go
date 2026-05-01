@@ -79,37 +79,37 @@ func tryNativeBulkInsert(ctx context.Context, db *sql.DB, tableName string, colu
 func bulkInsertRewrite(ctx context.Context, db *sql.DB, tableName string, columns []string, values [][]any) (sql.Result, error) {
 	columnNames := strings.Join(columns, ", ")
 	placeholderRow := "(" + strings.Repeat("?, ", len(columns)-1) + "?)"
-	
-	const maxChunkSize = 1000 
-	
+
+	const maxChunkSize = 1000
+
 	var totalAffected int64
 	for i := 0; i < len(values); i += maxChunkSize {
 		end := i + maxChunkSize
 		if end > len(values) {
 			end = len(values)
 		}
-		
+
 		chunk := values[i:end]
 		placeholders := make([]string, len(chunk))
 		for j := range chunk {
 			placeholders[j] = placeholderRow
 		}
-		
+
 		query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", tableName, columnNames, strings.Join(placeholders, ", "))
-		
+
 		flattenedValues := make([]any, 0, len(chunk)*len(columns))
 		for _, row := range chunk {
 			flattenedValues = append(flattenedValues, row...)
 		}
-		
+
 		res, err := db.ExecContext(ctx, query, flattenedValues...)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		affected, _ := res.RowsAffected()
 		totalAffected += affected
 	}
-	
+
 	return result{affectedRows: totalAffected}, nil
 }

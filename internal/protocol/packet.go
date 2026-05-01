@@ -226,17 +226,17 @@ func (c *PacketConn) writeEmptyContinuation() error {
 	mysqlHeader[3] = c.seq
 	c.seq++
 
-		if c.ob20 {
-			var obHeaderBuf [OB20HeaderLen]byte
-			h := OB20Header{
-				MagicNum:     c.ob20Magic,
-				Version:      OB20Version,
-				ConnectionID: c.connectionID,
-				RequestID:    c.requestID,
-				PacketSeq:    mysqlHeader[3],
-				PayloadLen:   uint32(len(mysqlHeader)),
-			}
-			h.Encode(obHeaderBuf[:])
+	if c.ob20 {
+		var obHeaderBuf [OB20HeaderLen]byte
+		h := OB20Header{
+			MagicNum:     c.ob20Magic,
+			Version:      OB20Version,
+			ConnectionID: c.connectionID,
+			RequestID:    c.requestID,
+			PacketSeq:    mysqlHeader[3],
+			PayloadLen:   uint32(len(mysqlHeader)),
+		}
+		h.Encode(obHeaderBuf[:])
 		if _, err := c.rw.Write(obHeaderBuf[:]); err != nil {
 			return err
 		}

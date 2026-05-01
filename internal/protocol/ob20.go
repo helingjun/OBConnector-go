@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	OB20MagicNum uint16 = 0x20AB
-	OB20Version  uint16 = 20
-	OB20HeaderLen uint8 = 24
+	OB20MagicNum  uint16 = 0x20AB
+	OB20Version   uint16 = 20
+	OB20HeaderLen uint8  = 24
 )
 
 const (
