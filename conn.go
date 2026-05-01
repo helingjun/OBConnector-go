@@ -3,6 +3,7 @@ package oceanbase
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"database/sql/driver"
 	"encoding/binary"
 	"errors"
@@ -289,6 +290,25 @@ func (c *Conn) handshake() error {
 		hs.authPlugin,
 		len(hs.authSeed),
 	)
+
+	// TLS upgrade if requested and supported
+	if c.cfg.TLSConfig != nil {
+		if hs.capabilities&protocol.ClientSSL == 0 {
+			return errors.New("oceanbase: server does not support SSL")
+		}
+		c.tracef("sending SSLRequest")
+		if err := c.sendSSLRequest(); err != nil {
+			return err
+		}
+
+		tlsConn := tls.Client(c.netConn, c.cfg.TLSConfig)
+		if err := tlsConn.Handshake(); err != nil {
+			return err
+		}
+		c.netConn = tlsConn
+		c.packets = protocol.NewPacketConn(tlsConn)
+	}
+
 	if hs.authPlugin == "" {
 		hs.authPlugin = "mysql_native_password"
 	}
@@ -325,6 +345,29 @@ func (c *Conn) handshake() error {
 	}
 }
 
+func (c *Conn) sendSSLRequest() error {
+	caps := protocol.ClientLongPassword |
+		protocol.ClientLongFlag |
+		protocol.ClientProtocol41 |
+		protocol.ClientTransactions |
+		protocol.ClientSecureConnection |
+		protocol.ClientMultiResults |
+		protocol.ClientPluginAuth |
+		protocol.ClientPluginAuthLenencClientData |
+		protocol.ClientConnectAttrs |
+		protocol.ClientSessionTrack |
+		protocol.ClientSupportOracleMode |
+		protocol.ClientSSL
+
+	payload := make([]byte, 32)
+	binary.LittleEndian.PutUint32(payload[0:4], caps)
+	binary.LittleEndian.PutUint32(payload[4:8], protocol.DefaultMaxPacketSize)
+	payload[8] = c.cfg.Collation
+
+	c.packets.ResetSequence()
+	return c.packets.WritePacket(payload)
+}
+
 func (c *Conn) buildHandshakeResponse(hs *handshake) []byte {
 	baseCaps := protocol.ClientLongPassword |
 		protocol.ClientLongFlag |
@@ -337,6 +380,9 @@ func (c *Conn) buildHandshakeResponse(hs *handshake) []byte {
 		protocol.ClientConnectAttrs |
 		protocol.ClientSessionTrack |
 		protocol.ClientSupportOracleMode
+	if c.cfg.TLSConfig != nil {
+		baseCaps |= protocol.ClientSSL
+	}
 	baseCaps |= presetCapabilities(c.cfg.Preset)
 	caps := baseCaps
 	if hs.capabilities&protocol.ClientProtocol41 == 0 {
@@ -685,7 +731,7 @@ type result struct {
 func (r result) LastInsertId() (int64, error) { return r.lastInsertID, nil }
 func (r result) RowsAffected() (int64, error) { return r.affectedRows, nil }
 
-func parseOK(packet []byte) (driver.Result, error) {
+func (c *Conn) handleOK(packet []byte) (driver.Result, error) {
 	if len(packet) == 0 || packet[0] != protocol.OKPacket {
 		return nil, fmt.Errorf("not an OK packet")
 	}
@@ -695,9 +741,22 @@ func parseOK(packet []byte) (driver.Result, error) {
 		return nil, err
 	}
 	pos += used
-	lastID, _, _, err := protocol.ReadLengthEncodedInt(packet[pos:])
+	lastID, used, _, err := protocol.ReadLengthEncodedInt(packet[pos:])
 	if err != nil {
 		return nil, err
 	}
+	pos += used
+
+	if pos < len(packet) {
+		status := binary.LittleEndian.Uint16(packet[pos : pos+2])
+		pos += 2
+		// c.status = status // We could track status flags
+		if status&protocol.ServerSessionStateChanged != 0 {
+			// Parse session state info if needed
+			// For now, we just trace that it changed
+			c.tracef("session state changed (status=0x%04x)", status)
+		}
+	}
+
 	return result{affectedRows: int64(affected), lastInsertID: int64(lastID)}, nil
 }

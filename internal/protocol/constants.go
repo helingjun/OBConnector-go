@@ -45,6 +45,10 @@ const (
 )
 
 const (
+	ServerSessionStateChanged uint16 = 0x4000
+)
+
+const (
 	ColumnTypeDecimal    byte = 0x00
 	ColumnTypeTiny       byte = 0x01
 	ColumnTypeShort      byte = 0x02

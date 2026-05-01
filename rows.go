@@ -183,7 +183,7 @@ func (c *Conn) readResultFromFirstPacket(packet []byte) (driver.Result, error) {
 	}
 	switch packet[0] {
 	case protocol.OKPacket:
-		return parseOK(packet)
+		return c.handleOK(packet)
 	case protocol.ErrPacket:
 		return nil, parseServerError(packet)
 	default:

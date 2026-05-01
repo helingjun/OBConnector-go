@@ -1,6 +1,7 @@
 package oceanbase
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ type Config struct {
 	Trace          bool
 	TraceWriter    io.Writer
 	ProtocolV2     bool
+	TLSConfig      *tls.Config
 }
 
 func ParseDSN(dsn string) (*Config, error) {
@@ -242,6 +244,18 @@ func applyQuery(cfg *Config, values url.Values) error {
 			return fmt.Errorf("invalid ob20: %w", err)
 		}
 		cfg.ProtocolV2 = enabled
+	}
+	if tlsVal := getQueryValue(values, "tls"); tlsVal != "" {
+		switch tlsVal {
+		case "true":
+			cfg.TLSConfig = &tls.Config{}
+		case "skip-verify":
+			cfg.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+		case "false":
+			cfg.TLSConfig = nil
+		default:
+			return fmt.Errorf("unsupported tls value %q", tlsVal)
+		}
 	}
 	cfg.InitSQL = append(cfg.InitSQL, values["init"]...)
 	for key, vals := range values {
