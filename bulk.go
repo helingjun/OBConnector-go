@@ -3,22 +3,83 @@ package oceanbase
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"strings"
 )
 
+type bulkExecer interface {
+	BulkExecContext(ctx context.Context, argRows [][]driver.NamedValue) (driver.Result, error)
+}
+
 // BulkInsert is a helper to perform high-performance multi-row inserts.
-// It rewrites multiple single-row inserts into a single multi-row insert.
+// It uses native COM_STMT_BULK_EXECUTE if supported, otherwise rewrites the SQL.
 func BulkInsert(ctx context.Context, db *sql.DB, tableName string, columns []string, values [][]any) (sql.Result, error) {
 	if len(values) == 0 {
 		return result{affectedRows: 0}, nil
 	}
 
+	// Try native bulk execution first
+	res, err := tryNativeBulkInsert(ctx, db, tableName, columns, values)
+	if err == nil {
+		return res, nil
+	}
+	// Fallback to SQL rewriting
+	return bulkInsertRewrite(ctx, db, tableName, columns, values)
+}
+
+func tryNativeBulkInsert(ctx context.Context, db *sql.DB, tableName string, columns []string, values [][]any) (sql.Result, error) {
+	columnNames := strings.Join(columns, ", ")
+	placeholders := "(" + strings.Repeat("?, ", len(columns)-1) + "?)"
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", tableName, columnNames, placeholders)
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	var result sql.Result
+	err = conn.Raw(func(driverConn any) error {
+		dConn, ok := driverConn.(driver.ConnPrepareContext)
+		if !ok {
+			return fmt.Errorf("driver does not support ConnPrepareContext")
+		}
+		stmt, err := dConn.PrepareContext(ctx, query)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+
+		bExec, ok := stmt.(bulkExecer)
+		if !ok {
+			return fmt.Errorf("statement does not support BulkExecContext")
+		}
+
+		argRows := make([][]driver.NamedValue, len(values))
+		for i, row := range values {
+			named := make([]driver.NamedValue, len(row))
+			for j, val := range row {
+				named[j] = driver.NamedValue{Ordinal: j + 1, Value: val}
+			}
+			argRows[i] = named
+		}
+
+		res, err := bExec.BulkExecContext(ctx, argRows)
+		if err != nil {
+			return err
+		}
+		result = res
+		return nil
+	})
+
+	return result, err
+}
+
+func bulkInsertRewrite(ctx context.Context, db *sql.DB, tableName string, columns []string, values [][]any) (sql.Result, error) {
 	columnNames := strings.Join(columns, ", ")
 	placeholderRow := "(" + strings.Repeat("?, ", len(columns)-1) + "?)"
 	
-	// OceanBase has a limit on the number of placeholders or packet size.
-	// For a professional driver, we should chunk the values.
 	const maxChunkSize = 1000 
 	
 	var totalAffected int64

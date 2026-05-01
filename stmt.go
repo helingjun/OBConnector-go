@@ -75,3 +75,19 @@ func (s *Stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 	}
 	return rows, nil
 }
+
+func (s *Stmt) BulkExecContext(ctx context.Context, argRows [][]driver.NamedValue) (driver.Result, error) {
+	if s.closed {
+		return nil, errors.New("oceanbase: statement is closed")
+	}
+	s.conn.mu.Lock()
+	defer s.conn.mu.Unlock()
+	if err := s.conn.checkUsableLocked(); err != nil {
+		return nil, err
+	}
+	res, err := s.conn.stmtBulkExecLocked(ctx, s.stmtID, argRows)
+	if err != nil {
+		return nil, s.conn.markBadIfConnErr(err)
+	}
+	return res, nil
+}

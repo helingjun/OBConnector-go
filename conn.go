@@ -530,6 +530,83 @@ func (c *Conn) stmtExecLocked(ctx context.Context, stmtID uint32, args []driver.
 	return result, err
 }
 
+func (c *Conn) stmtBulkExecLocked(ctx context.Context, stmtID uint32, argRows [][]driver.NamedValue) (driver.Result, error) {
+	if len(argRows) == 0 {
+		return result{}, nil
+	}
+
+	var result driver.Result
+	err := c.withDeadline(ctx, func() error {
+		c.setupExtraInfo(ctx)
+		c.packets.ResetSequence()
+		c.packets.NextRequest()
+
+		// COM_STMT_BULK_EXECUTE (0xFA)
+		// Header: 0xFA (1) + StmtID (4) + Flags (2)
+		const SEND_TYPES_TO_SERVER uint16 = 0x80
+		header := make([]byte, 7)
+		header[0] = protocol.ComStmtBulkExecute
+		binary.LittleEndian.PutUint32(header[1:5], stmtID)
+		binary.LittleEndian.PutUint16(header[5:7], SEND_TYPES_TO_SERVER)
+
+		// Param Types (2 bytes per param)
+		numParams := len(argRows[0])
+		paramTypes := make([]byte, numParams*2)
+		for i, arg := range argRows[0] {
+			val := arg.Value
+			if out, ok := val.(sql.Out); ok {
+				val = out.Dest
+			} else if out, ok := val.(*sql.Out); ok {
+				val = out.Dest
+			}
+			binary.LittleEndian.PutUint16(paramTypes[i*2:i*2+2], uint16(protocol.GetBinaryParamType(val)))
+		}
+
+		// Payload construction
+		var payload []byte
+		payload = append(payload, header...)
+		payload = append(payload, paramTypes...)
+
+		for _, row := range argRows {
+			for _, arg := range row {
+				val := arg.Value
+				if out, ok := val.(sql.Out); ok {
+					val = out.Dest
+				} else if out, ok := val.(*sql.Out); ok {
+					val = out.Dest
+				}
+
+				if val == nil {
+					payload = append(payload, 1) // NULL
+				} else {
+					payload = append(payload, 0) // NOT NULL
+					var err error
+					payload, err = protocol.AppendBinaryParam(payload, protocol.GetBinaryParamType(val), val)
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		if err := c.packets.WritePacket(payload); err != nil {
+			return err
+		}
+
+		first, err := c.packets.ReadPacket()
+		if err != nil {
+			return err
+		}
+		res, _, err := c.handleOK(first)
+		if err != nil {
+			return err
+		}
+		result = res
+		return nil
+	})
+	return result, err
+}
+
 func (c *Conn) writeExecute(stmtID uint32, args []driver.NamedValue) error {
 	c.packets.ResetSequence()
 	c.packets.NextRequest()
