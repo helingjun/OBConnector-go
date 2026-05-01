@@ -77,4 +77,22 @@ const (
 	ColumnTypeVarString  byte = 0xfd
 	ColumnTypeString     byte = 0xfe
 	ColumnTypeGeometry   byte = 0xff
+
+	// Oracle-specific types from OB JDBC
+	ColumnTypeOracleNumber       byte = 0x03 // Same as LONG, but used for NUMBER in Oracle mode
+	ColumnTypeOracleBinaryFloat  byte = 0x04 // Same as FLOAT, but used for BINARY_FLOAT
+	ColumnTypeOracleBinaryDouble byte = 0x05 // Same as DOUBLE, but used for BINARY_DOUBLE
+	ColumnTypeOracleTimestampTZ  byte = 0xc8 // 200
+	ColumnTypeOracleTimestampLTZ byte = 0xc9 // 201
+	ColumnTypeOracleTimestampNano byte = 0xca // 202
+	ColumnTypeOracleRaw         byte = 0xcb // 203
+	ColumnTypeOracleIntervalYM   byte = 0xcc // 204
+	ColumnTypeOracleIntervalDS   byte = 0xcd // 205
+	ColumnTypeOracleNumberFloat  byte = 0xce // 206
+	ColumnTypeOracleNVarChar2    byte = 0xcf // 207
+	ColumnTypeOracleNChar        byte = 0xd0 // 208
+	ColumnTypeOracleRowID        byte = 0xd1 // 209
+	ColumnTypeOracleBlob         byte = 0xd2 // 210
+	ColumnTypeOracleClob         byte = 0xd3 // 211
+	ColumnTypeOracleCursor       byte = 0xa3 // 163
 )

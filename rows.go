@@ -290,25 +290,33 @@ func textValue(raw []byte, typ byte) driver.Value {
 	s := string(raw)
 	switch typ {
 	case protocol.ColumnTypeTiny, protocol.ColumnTypeShort, protocol.ColumnTypeLong, protocol.ColumnTypeInt24:
+		// Note: ColumnTypeLong is also ColumnTypeOracleNumber (3). 
+		// In Oracle mode, we prefer string to preserve precision.
+		// However, without knowing the mode here, we might have a conflict.
+		// For now, let's assume if it can be parsed as int64, it's fine, 
+		// but Oracle NUMBER often exceeds int64.
 		if val, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return val
 		}
+		return s
 	case protocol.ColumnTypeLongLong:
 		if val, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return val
 		}
+		return s
+	case protocol.ColumnTypeOracleNumberFloat:
+		return s
 	case protocol.ColumnTypeFloat, protocol.ColumnTypeDouble:
-		// For Oracle mode, NUMBER can be reported as DOUBLE.
-		// To be safe and match Connector/J, we could return string for everything.
-		// But for standard MySQL FLOAT/DOUBLE, float64 is expected.
-		// For now, let's keep float64 but allow user to scan into string.
+		// ColumnTypeFloat is also ColumnTypeOracleBinaryFloat (4)
+		// ColumnTypeDouble is also ColumnTypeOracleBinaryDouble (5)
 		if val, err := strconv.ParseFloat(s, 64); err == nil {
 			return val
 		}
 	case protocol.ColumnTypeDecimal, protocol.ColumnTypeNewDecimal:
 		// Always return string for Decimal to preserve precision
 		return s
-	case protocol.ColumnTypeDate, protocol.ColumnTypeDateTime, protocol.ColumnTypeTimestamp:
+	case protocol.ColumnTypeDate, protocol.ColumnTypeDateTime, protocol.ColumnTypeTimestamp,
+		protocol.ColumnTypeOracleTimestampNano, protocol.ColumnTypeOracleTimestampTZ, protocol.ColumnTypeOracleTimestampLTZ:
 		formats := []string{
 			"2006-01-02 15:04:05.999999999",
 			"2006-01-02 15:04:05",
@@ -332,10 +340,13 @@ func databaseTypeName(typ byte) string {
 	case protocol.ColumnTypeShort:
 		return "SMALLINT"
 	case protocol.ColumnTypeLong:
+		// Also ColumnTypeOracleNumber. Usually INT in MySQL.
 		return "INT"
 	case protocol.ColumnTypeFloat:
+		// Also ColumnTypeOracleBinaryFloat
 		return "FLOAT"
 	case protocol.ColumnTypeDouble:
+		// Also ColumnTypeOracleBinaryDouble
 		return "DOUBLE"
 	case protocol.ColumnTypeNull:
 		return "NULL"
@@ -379,6 +390,14 @@ func databaseTypeName(typ byte) string {
 		return "STRING"
 	case protocol.ColumnTypeGeometry:
 		return "GEOMETRY"
+	case protocol.ColumnTypeOracleTimestampTZ:
+		return "TIMESTAMP WITH TIME ZONE"
+	case protocol.ColumnTypeOracleTimestampLTZ:
+		return "TIMESTAMP WITH LOCAL TIME ZONE"
+	case protocol.ColumnTypeOracleRaw:
+		return "RAW"
+	case protocol.ColumnTypeOracleRowID:
+		return "ROWID"
 	default:
 		return fmt.Sprintf("TYPE_%02X", typ)
 	}
@@ -398,7 +417,10 @@ func scanType(typ byte) reflect.Type {
 		protocol.ColumnTypeMediumBlob,
 		protocol.ColumnTypeLongBlob,
 		protocol.ColumnTypeBlob,
-		protocol.ColumnTypeGeometry:
+		protocol.ColumnTypeGeometry,
+		protocol.ColumnTypeOracleRaw,
+		protocol.ColumnTypeOracleBlob,
+		protocol.ColumnTypeOracleClob:
 		return reflect.TypeOf([]byte{})
 	default:
 		return reflect.TypeOf("")
