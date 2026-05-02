@@ -793,8 +793,11 @@ func (c *Conn) setupExtraInfo(ctx context.Context) {
 		binary.BigEndian.PutUint64(buf, uint64(id))
 		c.packets.AddExtraInfo(protocol.OB20ExtraInfoTypePartitionID, buf)
 	}
-	if id, ok := traceIDFromContext(ctx); ok {
-		c.packets.AddExtraInfo(protocol.OB20ExtraInfoTypeTraceID, []byte(id))
+
+	traceID, okT := traceIDFromContext(ctx)
+	spanID, okS := spanIDFromContext(ctx)
+	if okT || okS {
+		c.packets.AddExtraInfo(protocol.OB20ExtraInfoTypeFullTrace, protocol.BuildFLTExtraInfo(traceID, spanID))
 	}
 }
 

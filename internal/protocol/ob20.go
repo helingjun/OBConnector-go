@@ -138,3 +138,14 @@ const (
 	OB20ExtraInfoTypeTableID     uint16 = 2004
 	OB20ExtraInfoTypePartitionID uint16 = 2005 // Adjusted to follow JDBC pattern
 )
+
+func BuildFLTExtraInfo(traceID, spanID string) []byte {
+	// Simple FLT encoding for skeleton implementation
+	// Tag 1: TraceID, Tag 2: SpanID
+	var buf []byte
+	buf = append(buf, 0x01) // Tag TraceID
+	buf = PutLengthEncodedString(buf, traceID)
+	buf = append(buf, 0x02) // Tag SpanID
+	buf = PutLengthEncodedString(buf, spanID)
+	return buf
+}
