@@ -20,6 +20,7 @@ import (
 
 	"github.com/helingjun/obconnector-go/internal/protocol"
 )
+
 type Conn struct {
 	netConn net.Conn
 	packets *protocol.PacketConn
