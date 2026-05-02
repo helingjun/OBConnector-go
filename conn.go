@@ -20,15 +20,16 @@ import (
 
 	"github.com/helingjun/obconnector-go/internal/protocol"
 )
-
 type Conn struct {
 	netConn net.Conn
 	packets *protocol.PacketConn
 	cfg     *Config
-	mu      sync.Mutex
-	closed  bool
-	bad     bool
-	inTx    bool
+	db      string // current database
+
+	mu     sync.Mutex
+	closed bool
+	bad    bool
+	inTx   bool
 }
 
 type handshake struct {
@@ -577,8 +578,18 @@ func (c *Conn) assignOutParam(dest any, value driver.Value) error {
 	if dest == nil {
 		return nil
 	}
+
+	if scanner, ok := dest.(sql.Scanner); ok {
+		return scanner.Scan(value)
+	}
+
 	if value == nil {
-		// Set destination to zero value or nil if possible
+		// Destination is not a scanner, but value is nil.
+		// If it's a pointer, we could zero it.
+		dv := reflect.ValueOf(dest)
+		if dv.Kind() == reflect.Ptr && !dv.IsNil() {
+			dv.Elem().Set(reflect.Zero(dv.Elem().Type()))
+		}
 		return nil
 	}
 
@@ -952,9 +963,46 @@ func (c *Conn) handleOK(packet []byte) (res driver.Result, status uint16, err er
 		status = binary.LittleEndian.Uint16(packet[pos : pos+2])
 		pos += 2
 		if status&protocol.ServerSessionStateChanged != 0 {
+			if pos < len(packet) {
+				if err := c.handleStateChange(packet[pos:]); err != nil {
+					c.tracef("failed to parse state change: %v", err)
+				}
+			}
 			c.tracef("session state changed (status=0x%04x)", status)
 		}
 	}
 
 	return result{affectedRows: int64(affected), lastInsertID: int64(lastID)}, status, nil
+}
+
+func (c *Conn) handleStateChange(data []byte) error {
+	raw, _, _, err := protocol.ReadLengthEncodedString(data)
+	if err != nil {
+		return err
+	}
+
+	pos := 0
+	for pos < len(raw) {
+		typ := raw[pos]
+		pos++
+		val, used, _, err := protocol.ReadLengthEncodedString(raw[pos:])
+		if err != nil {
+			return err
+		}
+		pos += used
+
+		switch typ {
+		case 0x00: // SESSION_TRACK_SYSTEM_VARIABLES
+			// val contains key and value as length encoded strings
+			k, u, _, err := protocol.ReadLengthEncodedString(val)
+			if err == nil {
+				v, _, _, _ := protocol.ReadLengthEncodedString(val[u:])
+				c.tracef("session variable change: %s = %s", k, v)
+			}
+		case 0x01: // SESSION_TRACK_SCHEMA
+			c.db = string(val)
+			c.tracef("database change: %s", c.db)
+		}
+	}
+	return nil
 }
