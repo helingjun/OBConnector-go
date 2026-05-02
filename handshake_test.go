@@ -37,7 +37,11 @@ func TestHandshakeResponseIncludesOceanBaseOracleExtensions(t *testing.T) {
 		authSeed:   []byte("12345678901234567890"),
 	}
 
-	response := conn.buildHandshakeResponse(hs)
+	authResp, err := buildAuthResponse(hs.authPlugin, cfg.Password, hs.authSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := conn.buildHandshakeResponse(hs, authResp)
 	caps := binary.LittleEndian.Uint32(response[:4])
 	if caps&protocol.ClientSupportOracleMode == 0 {
 		t.Fatalf("CLIENT_SUPPORT_ORACLE_MODE missing from %#x", caps)

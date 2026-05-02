@@ -321,11 +321,13 @@ func (c *Conn) handshake() error {
 	if hs.authPlugin == "" {
 		hs.authPlugin = "mysql_native_password"
 	}
-	if hs.authPlugin != "mysql_native_password" {
-		return fmt.Errorf("oceanbase: auth plugin %q is not implemented", hs.authPlugin)
+
+	authResp, err := buildAuthResponse(hs.authPlugin, c.cfg.Password, hs.authSeed)
+	if err != nil {
+		return err
 	}
 
-	response := c.buildHandshakeResponse(hs)
+	response := c.buildHandshakeResponse(hs, authResp)
 	c.tracef("client handshake response: payload_len=%d", len(response))
 	if err := c.packets.WritePacket(response); err != nil {
 		return err
@@ -381,7 +383,18 @@ func (c *Conn) sendSSLRequest() error {
 	return c.packets.WritePacket(payload)
 }
 
-func (c *Conn) buildHandshakeResponse(hs *handshake) []byte {
+func buildAuthResponse(plugin, password string, seed []byte) ([]byte, error) {
+	switch plugin {
+	case "mysql_native_password":
+		return protocol.NativePasswordAuth(password, seed), nil
+	case "caching_sha2_password":
+		return protocol.CachingSha2PasswordAuth(password, seed), nil
+	default:
+		return nil, fmt.Errorf("oceanbase: auth plugin %q is not implemented", plugin)
+	}
+}
+
+func (c *Conn) buildHandshakeResponse(hs *handshake, authResp []byte) []byte {
 	baseCaps := protocol.ClientLongPassword |
 		protocol.ClientLongFlag |
 		protocol.ClientProtocol41 |
@@ -422,7 +435,7 @@ func (c *Conn) buildHandshakeResponse(hs *handshake) []byte {
 	out = append(out, make([]byte, 23)...)
 	out = append(out, c.cfg.User...)
 	out = append(out, 0x00)
-	out = protocol.PutLengthEncodedString(out, string(protocol.NativePasswordAuth(c.cfg.Password, hs.authSeed)))
+	out = protocol.PutLengthEncodedString(out, string(authResp))
 	if caps&protocol.ClientConnectWithDB != 0 {
 		out = append(out, c.cfg.Database...)
 		out = append(out, 0x00)
