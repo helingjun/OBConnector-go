@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"reflect"
 	"runtime"
 	"sort"
 	"sync"
@@ -511,23 +512,81 @@ func (c *Conn) stmtExecLocked(ctx context.Context, stmtID uint32, args []driver.
 		result = res
 
 		if status&protocol.ServerPSOutParams != 0 {
-			// Read the OUT parameter row
-			rowPacket, err := c.packets.ReadPacket()
-			if err != nil {
-				return err
-			}
-			// In a professional driver, we'd parse this row and populate args.
-			// This requires knowing the types of the OUT parameters.
-			c.tracef("received OUT parameters (packet len=%d)", len(rowPacket))
-
-			// We must read the final OK packet
-			if _, err := c.packets.ReadPacket(); err != nil {
+			if err := c.readOutParams(args); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	return result, err
+}
+
+func (c *Conn) readOutParams(args []driver.NamedValue) error {
+	rows, err := c.readQueryResult()
+	if err != nil {
+		return err
+	}
+	r, ok := rows.(*Rows)
+	if !ok {
+		return fmt.Errorf("oceanbase: unexpected rows type for OUT parameters")
+	}
+	r.binary = true // OUT parameters are returned in binary format
+	defer r.Close()
+
+	dest := make([]driver.Value, len(r.columns))
+	if err := r.Next(dest); err != nil {
+		return err
+	}
+
+	outIdx := 0
+	for _, arg := range args {
+		var outDest any
+		if out, ok := arg.Value.(sql.Out); ok {
+			outDest = out.Dest
+		} else if out, ok := arg.Value.(*sql.Out); ok {
+			outDest = out.Dest
+		} else {
+			continue
+		}
+
+		if outIdx < len(dest) {
+			if err := c.assignOutParam(outDest, dest[outIdx]); err != nil {
+				return err
+			}
+			outIdx++
+		}
+	}
+
+	return nil
+}
+
+func (c *Conn) assignOutParam(dest any, value driver.Value) error {
+	if dest == nil {
+		return nil
+	}
+	if value == nil {
+		// Set destination to zero value or nil if possible
+		return nil
+	}
+
+	dv := reflect.ValueOf(dest)
+	if dv.Kind() != reflect.Ptr || dv.IsNil() {
+		return fmt.Errorf("oceanbase: OUT parameter destination must be a non-nil pointer")
+	}
+
+	vv := reflect.ValueOf(value)
+	if vv.Type().AssignableTo(dv.Elem().Type()) {
+		dv.Elem().Set(vv)
+		return nil
+	}
+
+	if vv.Type().ConvertibleTo(dv.Elem().Type()) {
+		dv.Elem().Set(vv.Convert(dv.Elem().Type()))
+		return nil
+	}
+
+	// Handle common conversions manually if needed (e.g. string to int)
+	return fmt.Errorf("oceanbase: cannot assign OUT parameter of type %T to %T", value, dest)
 }
 
 func (c *Conn) stmtBulkExecLocked(ctx context.Context, stmtID uint32, argRows [][]driver.NamedValue) (driver.Result, error) {
