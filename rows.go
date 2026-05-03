@@ -51,7 +51,8 @@ func (r *Rows) finish() {
 }
 
 func (r *Rows) drain() error {
-	for {
+	const maxDrainRows = 10000
+	for i := 0; i < maxDrainRows; i++ {
 		packet, err := r.conn.packets.ReadPacket()
 		if err != nil {
 			_ = r.conn.markBadIfConnErr(err)
@@ -64,6 +65,8 @@ func (r *Rows) drain() error {
 			return parseServerError(packet)
 		}
 	}
+	r.conn.bad = true
+	return fmt.Errorf("oceanbase: drain() exceeded %d rows, possible protocol desync", maxDrainRows)
 }
 
 func (r *Rows) nextStreaming(dest []driver.Value) error {
@@ -236,7 +239,29 @@ func (c *Conn) readEOFOrOK() error {
 }
 
 func isEOFOrOK(packet []byte) bool {
-	return len(packet) > 0 && (packet[0] == protocol.EOFPacket || packet[0] == protocol.OKPacket) && len(packet) < 9
+	if len(packet) == 0 {
+		return false
+	}
+	switch packet[0] {
+	case protocol.ErrPacket:
+		return false
+	case protocol.OKPacket:
+		// OK packet: 0x00 + affected_rows(lenenc) + last_insert_id(lenenc) + [status(2) + ...]
+		// Try to parse affected_rows. If parsing succeeds, it's an OK packet (not a row).
+		// A bare 0x00 is a valid minimal OK packet.
+		_, used, _, err := protocol.ReadLengthEncodedInt(packet[1:])
+		if err != nil {
+			return false
+		}
+		// Try to parse last_insert_id — an OK packet always has this field.
+		_, _, _, err = protocol.ReadLengthEncodedInt(packet[1+used:])
+		return err == nil
+	case protocol.EOFPacket:
+		// EOF packet: 0xFE + status(2) + warnings(2) = 5 bytes minimum in MySQL 5.7+
+		// Contextually, 0xFE always means EOF after the column-definition or row-data phase.
+		return true
+	}
+	return false
 }
 
 func parseColumnDefinition(packet []byte) (name string, typ byte, err error) {
@@ -281,7 +306,11 @@ func parseTextRow(packet []byte, columnCount int, types []byte) ([]driver.Value,
 			return nil, err
 		}
 		pos += used
-		row[i] = textValue(raw, types[i])
+		typ := protocol.ColumnTypeVarString
+		if i < len(types) {
+			typ = types[i]
+		}
+		row[i] = textValue(raw, typ)
 	}
 	return row, nil
 }
@@ -327,6 +356,23 @@ func textValue(raw []byte, typ byte) driver.Value {
 				return t
 			}
 		}
+	case protocol.ColumnTypeTime:
+		// TIME as string (e.g. "HH:MM:SS" or "HH:MM:SS.ffffff")
+		return s
+	case protocol.ColumnTypeYear:
+		if val, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return val
+		}
+		return s
+	case protocol.ColumnTypeBit:
+		return raw
+	case protocol.ColumnTypeTinyBlob, protocol.ColumnTypeMediumBlob,
+		protocol.ColumnTypeLongBlob, protocol.ColumnTypeBlob,
+		protocol.ColumnTypeOracleRaw, protocol.ColumnTypeOracleBlob, protocol.ColumnTypeOracleClob:
+		return raw
+	case protocol.ColumnTypeOracleRowID, protocol.ColumnTypeOracleIntervalYM,
+		protocol.ColumnTypeOracleIntervalDS, protocol.ColumnTypeOracleNVarChar2, protocol.ColumnTypeOracleNChar:
+		return s
 	}
 	return s
 }

@@ -4,8 +4,25 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 )
+
+// SeqError is returned when a packet's sequence number doesn't match expectations.
+// It implements net.Error so that the driver marks the connection as bad.
+type SeqError struct {
+	Got  byte
+	Want byte
+}
+
+func (e *SeqError) Error() string {
+	return fmt.Sprintf("unexpected packet sequence: got %d, want %d", e.Got, e.Want)
+}
+
+func (e *SeqError) Timeout() bool   { return false }
+func (e *SeqError) Temporary() bool { return false }
+
+var _ net.Error = (*SeqError)(nil)
 
 const maxPayloadLen = 1<<24 - 1
 
@@ -97,11 +114,16 @@ func (c *PacketConn) ReadPacket() ([]byte, error) {
 				return nil, io.ErrUnexpectedEOF
 			}
 			mysqlLen := int(mysqlPacket[0]) | int(mysqlPacket[1])<<8 | int(mysqlPacket[2])<<16
-			gotSeq := mysqlPacket[3]
-			if gotSeq != c.seq {
-				return nil, fmt.Errorf("unexpected packet sequence: got %d, want %d", gotSeq, c.seq)
+
+			// In OB20 mode, skip MySQL seq checking — OB20 has its own sequencing (PacketSeq/obSeqNo).
+			// The MySQL seq doesn't reset per-command in OB20 mode, so it's not reliable.
+			// c.seq is only used for non-OB20 MySQL protocol or for WritePacket output (which resets).
+			if !c.ob20 {
+				if gotSeq := mysqlPacket[3]; gotSeq != c.seq {
+					return nil, &SeqError{Got: gotSeq, Want: c.seq}
+				}
+				c.seq++
 			}
-			c.seq++
 
 			// Check for Extra Info
 			if int(h.PayloadLen) > 4+mysqlLen {
@@ -122,7 +144,7 @@ func (c *PacketConn) ReadPacket() ([]byte, error) {
 			payloadLen := int(header[0]) | int(header[1])<<8 | int(header[2])<<16
 			gotSeq := header[3]
 			if gotSeq != c.seq {
-				return nil, fmt.Errorf("unexpected packet sequence: got %d, want %d", gotSeq, c.seq)
+				return nil, &SeqError{Got: gotSeq, Want: c.seq}
 			}
 			c.seq++
 

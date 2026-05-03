@@ -547,13 +547,23 @@ func runFullTest(ctx context.Context, connString string) error {
 	}
 	fmt.Println("CREATE TABLE OK")
 
-	// 6. INSERT
+	// 6. INSERT + COMMIT (dedicated conn for transactional safety in Oracle mode)
 	fmt.Println("\n=== 6. INSERT ===")
+	insertConn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("get insert conn failed: %w", err)
+	}
 	for i, row := range [][]any{{1, "Alice", 30}, {2, "Bob", 25}, {3, "Charlie", 35}} {
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s (id, name, age) VALUES (?, ?, ?)", tableName), row...); err != nil {
+		if _, err := insertConn.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s (id, name, age) VALUES (?, ?, ?)", tableName), row...); err != nil {
+			insertConn.Close()
 			return fmt.Errorf("insert row %d failed: %w", i+1, err)
 		}
 	}
+	if _, err := insertConn.ExecContext(ctx, "COMMIT"); err != nil {
+		insertConn.Close()
+		return fmt.Errorf("commit failed: %w", err)
+	}
+	insertConn.Close()
 	fmt.Println("INSERT 3 rows OK")
 
 	// 7. SELECT (multi-row)
@@ -590,40 +600,44 @@ func runFullTest(ctx context.Context, connString string) error {
 	}
 	fmt.Printf("Param query: id=1 -> name=%s age=%d\n", name, age)
 
-	// 9. Prepared Statement (?) — uses server-side prepared statement (COM_STMT_EXECUTE).
-	// NOTE: Some OBProxy versions do not support COM_STMT_EXECUTE.
-	// Feature test — non-fatal on failure, connection isolated via db.Conn.
-	runPrepTest := func(label, query string) {
-		fmt.Printf("\n=== %s ===\n", label)
-		conn, err := db.Conn(ctx)
-		if err != nil {
-			fmt.Printf("  get conn failed: %v\n", err)
-			return
-		}
-		stmtPrep, err := conn.PrepareContext(ctx, query)
-		if err != nil {
-			fmt.Printf("  Prepare failed: %v\n", err)
-			// Close underlying driver conn to avoid returning bad conn to pool
-			forceCloseConn(conn)
-			conn.Close()
-			return
-		}
-		var n string
-		var a int64
-		if err := stmtPrep.QueryRowContext(ctx, 1).Scan(&n, &a); err != nil {
-			fmt.Printf("  Exec failed: %v\n", err)
+		// 9. Prepared Statement (?) — uses server-side prepared statement (COM_STMT_EXECUTE).
+		// NOTE: Some OBProxy versions do not support COM_STMT_EXECUTE.
+		// Feature test — non-fatal on failure. Uses a separate DB handle to avoid
+		// connection desync (e.g. from unsupported :1 placeholders) affecting DML state.
+		runPrepTest := func(label, query string) {
+			fmt.Printf("\n=== %s ===\n", label)
+			prepDB, err := openDB(connString)
+			if err != nil {
+				fmt.Printf("  get dedicated db failed: %v\n", err)
+				return
+			}
+			defer prepDB.Close()
+			conn, err := prepDB.Conn(ctx)
+			if err != nil {
+				fmt.Printf("  get conn failed: %v\n", err)
+				return
+			}
+			stmtPrep, err := conn.PrepareContext(ctx, query)
+			if err != nil {
+				fmt.Printf("  Prepare failed: %v\n", err)
+				conn.Close()
+				return
+			}
+			var n string
+			var a int64
+			if err := stmtPrep.QueryRowContext(ctx, 1).Scan(&n, &a); err != nil {
+				fmt.Printf("  Exec failed: %v\n", err)
+				stmtPrep.Close()
+				conn.Close()
+				return
+			}
 			stmtPrep.Close()
-			forceCloseConn(conn)
 			conn.Close()
-			return
+			fmt.Printf("  id=1 -> name=%s age=%d\n", n, a)
 		}
-		stmtPrep.Close()
-		conn.Close()
-		fmt.Printf("  id=1 -> name=%s age=%d\n", n, a)
-	}
 
-	runPrepTest("9. Prepared Statement (?)", fmt.Sprintf("SELECT name, age FROM %s WHERE id = ?", tableName))
-	runPrepTest("10. Prepared Statement (:1)", fmt.Sprintf("SELECT name, age FROM %s WHERE id = :1", tableName))
+		runPrepTest("9. Prepared Statement (?)", fmt.Sprintf("SELECT name, age FROM %s WHERE id = ?", tableName))
+		runPrepTest("10. Prepared Statement (:1)", fmt.Sprintf("SELECT name, age FROM %s WHERE id = :1", tableName))
 
 	// 11. UPDATE
 	fmt.Println("\n=== 11. UPDATE ===")
@@ -716,15 +730,6 @@ func runFullTest(ctx context.Context, connString string) error {
 
 	fmt.Println("\n=== ALL TESTS PASSED ===")
 	return nil
-}
-
-func forceCloseConn(conn *sql.Conn) {
-	_ = conn.Raw(func(driverConn any) error {
-		if c, ok := driverConn.(io.Closer); ok {
-			return c.Close()
-		}
-		return nil
-	})
 }
 
 func queryOnDedicatedConn(ctx context.Context, db *sql.DB) (string, error) {

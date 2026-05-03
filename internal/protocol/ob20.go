@@ -89,8 +89,10 @@ var crc16Table = func() [256]uint16 {
 	return table
 }()
 
+var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
+
 func OB20PayloadChecksum(data []byte) uint32 {
-	return crc32.ChecksumIEEE(data)
+	return crc32.Checksum(data, crc32cTable)
 }
 
 type OB20ExtraInfo struct {

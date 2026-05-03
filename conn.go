@@ -528,16 +528,31 @@ func (c *Conn) stmtExecLocked(ctx context.Context, stmtID uint32, args []driver.
 		if err != nil {
 			return err
 		}
-		res, status, err := c.handleOK(first)
-		if err != nil {
-			return err
+		if len(first) == 0 {
+			return io.ErrUnexpectedEOF
 		}
-		result = res
-
-		if status&protocol.ServerPSOutParams != 0 {
-			if err := c.readOutParams(args); err != nil {
+		switch first[0] {
+		case protocol.OKPacket:
+			res, status, err := c.handleOK(first)
+			if err != nil {
 				return err
 			}
+			result = res
+			if status&protocol.ServerPSOutParams != 0 {
+				if err := c.readOutParams(args); err != nil {
+					return err
+				}
+			}
+		case protocol.ErrPacket:
+			return parseServerError(first)
+		default:
+			// Exec against a SELECT-like statement: drain the result set
+			// to keep the connection usable and avoid desync.
+			res, err := c.readResultFromFirstPacket(first)
+			if err != nil {
+				return err
+			}
+			result = res
 		}
 		return nil
 	})
@@ -861,9 +876,11 @@ func (c *Conn) withDeadline(ctx context.Context, fn func() error) error {
 	}
 
 	err := fn()
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		c.bad = true
-		return ctxErr
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			c.bad = true
+			return ctxErr
+		}
 	}
 	return err
 }

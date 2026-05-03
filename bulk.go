@@ -28,10 +28,49 @@ func BulkInsert(ctx context.Context, db *sql.DB, tableName string, columns []str
 	return bulkInsertRewrite(ctx, db, tableName, columns, values)
 }
 
+func quoteIdent(name string) string {
+	// Simple alphanumeric+underscore identifiers don't need quoting —
+	// this prevents SQL injection while preserving case behavior
+	// (Oracle uppercases unquoted identifiers).
+	if isSimpleIdent(name) {
+		return name
+	}
+	// For identifiers with special characters, quote with double quotes.
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+func isSimpleIdent(name string) bool {
+	if len(name) == 0 || !isAlpha(name[0]) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if !isAlnum(name[i]) && name[i] != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlpha(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+func isAlnum(c byte) bool {
+	return isAlpha(c) || (c >= '0' && c <= '9')
+}
+
+func quoteIdentList(names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = quoteIdent(n)
+	}
+	return strings.Join(quoted, ", ")
+}
+
 func tryNativeBulkInsert(ctx context.Context, db *sql.DB, tableName string, columns []string, values [][]any) (sql.Result, error) {
-	columnNames := strings.Join(columns, ", ")
+	columnNames := quoteIdentList(columns)
 	placeholders := "(" + strings.Repeat("?, ", len(columns)-1) + "?)"
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", tableName, columnNames, placeholders)
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", quoteIdent(tableName), columnNames, placeholders)
 
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -77,7 +116,7 @@ func tryNativeBulkInsert(ctx context.Context, db *sql.DB, tableName string, colu
 }
 
 func bulkInsertRewrite(ctx context.Context, db *sql.DB, tableName string, columns []string, values [][]any) (sql.Result, error) {
-	columnNames := strings.Join(columns, ", ")
+	columnNames := quoteIdentList(columns)
 	placeholderRow := "(" + strings.Repeat("?, ", len(columns)-1) + "?)"
 
 	const maxChunkSize = 1000
@@ -95,7 +134,7 @@ func bulkInsertRewrite(ctx context.Context, db *sql.DB, tableName string, column
 			placeholders[j] = placeholderRow
 		}
 
-		query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", tableName, columnNames, strings.Join(placeholders, ", "))
+		query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s", quoteIdent(tableName), columnNames, strings.Join(placeholders, ", "))
 
 		flattenedValues := make([]any, 0, len(chunk)*len(columns))
 		for _, row := range chunk {

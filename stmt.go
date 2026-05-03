@@ -20,7 +20,7 @@ func (s *Stmt) Close() error {
 		return nil
 	}
 	s.closed = true
-	if s.conn == nil || s.conn.closed || s.conn.bad {
+	if s.conn == nil {
 		return nil
 	}
 	return s.conn.closeStmt(s.stmtID)
