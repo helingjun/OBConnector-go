@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-03
+
+### Added
+
+- TLS support with custom CA certificate (`--tls`, `--tls-ca` flags and `tls.ca` DSN parameter).
+- `--mysql-mode` flag for MySQL tenant testing.
+- `cmd/obping --full-test`: 16-test comprehensive integration suite for regression testing.
+- `isMissingTableError` now handles MySQL error 1051 ("Unknown table").
+
+### Fixed
+
+- TLS `ServerName` now auto-detected from the dial hostname (not resolved IP), enabling CA cert verification through OBProxy.
+- Oracle `SYSDATE` replaced with `CURRENT_TIMESTAMP` for cross-mode compatibility.
+
 ## [0.1.0] - 2026-04-30
 
 First tagged release for downstream integration (e.g. `go get` / `xixi`).

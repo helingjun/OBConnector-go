@@ -6,7 +6,7 @@ import (
 )
 
 func TestApplyExperimentParamsOpaqueDSN(t *testing.T) {
-	dsn, err := applyExperimentParams("oceanbase:u:p@127.0.0.1:2883/db?TIMEOUT=5", true, "", "", "", "oboracle", false, nil, nil)
+	dsn, err := applyExperimentParams("oceanbase:u:p@127.0.0.1:2883/db?TIMEOUT=5", true, "", "", "", "oboracle", false, false, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +63,12 @@ func TestSmokeTableName(t *testing.T) {
 func TestIsMissingTableError(t *testing.T) {
 	if !isMissingTableError(errString("oceanbase: error 942 (42S02): ORA-00942: table does not exist")) {
 		t.Fatal("ORA-00942 should be recognized")
+	}
+	if !isMissingTableError(errString("oceanbase: error 1051 (42S02): Unknown table 'foo'")) {
+		t.Fatal("MySQL error 1051 should be recognized")
+	}
+	if !isMissingTableError(errString("Unknown table 'foo'")) {
+		t.Fatal("'Unknown table' string should be recognized")
 	}
 	if isMissingTableError(errString("some other error")) {
 		t.Fatal("unrelated error should not be recognized")

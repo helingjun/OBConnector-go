@@ -312,7 +312,15 @@ func (c *Conn) handshake() error {
 			return err
 		}
 
-		tlsConn := tls.Client(c.netConn, c.cfg.TLSConfig)
+		tlsConfig := c.cfg.TLSConfig
+		if tlsConfig.ServerName == "" {
+			host, _, err := net.SplitHostPort(c.cfg.Addr)
+			if err == nil && net.ParseIP(host) == nil {
+				tlsConfig = tlsConfig.Clone()
+				tlsConfig.ServerName = host
+			}
+		}
+		tlsConn := tls.Client(c.netConn, tlsConfig)
 		if err := tlsConn.Handshake(); err != nil {
 			return err
 		}

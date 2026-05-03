@@ -2,6 +2,7 @@ package oceanbase
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -264,6 +265,20 @@ func applyQuery(cfg *Config, values url.Values) error {
 		default:
 			return fmt.Errorf("unsupported tls value %q", tlsVal)
 		}
+	}
+	if tlsCA := getQueryValue(values, "tls.ca", "tls_ca"); tlsCA != "" {
+		pemData, err := os.ReadFile(tlsCA)
+		if err != nil {
+			return fmt.Errorf("invalid tls.ca: %w", err)
+		}
+		rootPool := x509.NewCertPool()
+		if !rootPool.AppendCertsFromPEM(pemData) {
+			return errors.New("invalid tls.ca: no valid certificate found")
+		}
+		if cfg.TLSConfig == nil {
+			cfg.TLSConfig = &tls.Config{}
+		}
+		cfg.TLSConfig.RootCAs = rootPool
 	}
 	cfg.InitSQL = append(cfg.InitSQL, values["init"]...)
 	for key, vals := range values {

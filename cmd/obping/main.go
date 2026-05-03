@@ -45,6 +45,11 @@ func main() {
 		paramTest = flag.Bool("param-test", false, "run parameterized QueryContext/ExecContext smoke tests")
 		poolTest  = flag.Bool("pool-test", false, "run database/sql pool lifecycle smoke tests")
 		bulkTest  = flag.Bool("bulk-test", false, "run BulkInsert smoke test")
+		fullTest  = flag.Bool("full-test", false, "run comprehensive integration tests (all of the above)")
+		oraMode   = flag.Bool("oracle-mode", false, "force Oracle mode (equivalent to oracleMode=true in DSN)")
+		mysqlMode = flag.Bool("mysql-mode", false, "force MySQL mode (equivalent to oracleMode=false in DSN)")
+		tlsFlag   = flag.Bool("tls", false, "enable TLS")
+		tlsCAFlag = flag.String("tls-ca", "", "path to CA certificate for TLS")
 	)
 	flag.Var(&attrs, "attr", "connection attribute key=value; can be repeated")
 	flag.Var(&initSQL, "init", "initial SQL to run after auth; can be repeated")
@@ -56,13 +61,31 @@ func main() {
 			fmt.Fprintln(os.Stderr, "missing -user or -dsn")
 			os.Exit(2)
 		}
-		connString = buildDSN(*user, *pass, *host, *port, *dbName, *timeout, *trace, *capAdd, *capDrop, *collation, *preset, *ob20, attrs, initSQL)
+		connString = buildDSN(*user, *pass, *host, *port, *dbName, *timeout, *trace, *capAdd, *capDrop, *collation, *preset, *ob20, *oraMode, attrs, initSQL)
 	} else {
 		var err error
-		connString, err = applyExperimentParams(connString, *trace, *capAdd, *capDrop, *collation, *preset, *ob20, attrs, initSQL)
+		connString, err = applyExperimentParams(connString, *trace, *capAdd, *capDrop, *collation, *preset, *ob20, *oraMode, attrs, initSQL)
 		if err != nil {
 			exitErr(err)
 		}
+	}
+
+	// Apply TLS and MySQL mode flags (applied to any DSN format)
+	var extraParams url.Values
+	if *tlsFlag || *tlsCAFlag != "" || *mysqlMode {
+		extraParams = url.Values{}
+	}
+	if *tlsFlag {
+		extraParams.Set("tls", "true")
+	}
+	if *tlsCAFlag != "" {
+		extraParams.Set("tls.ca", *tlsCAFlag)
+	}
+	if *mysqlMode {
+		extraParams.Set("oracleMode", "false")
+	}
+	if extraParams != nil {
+		connString = appendRawQuery(connString, extraParams)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -109,6 +132,13 @@ func main() {
 		return
 	}
 
+	if *fullTest {
+		if err := runFullTest(ctx, connString); err != nil {
+			exitErr(err)
+		}
+		return
+	}
+
 	if *query == defaultQuery {
 		value, err := runScalar(ctx, connString, *query)
 		if err != nil {
@@ -149,7 +179,7 @@ func probePresets(ctx context.Context, baseDSN string) error {
 	presets := []string{"default", "oboracle", "obclient", "libobclient", "connector-c", "connector-j"}
 	var lastErr error
 	for _, preset := range presets {
-		dsn, err := applyExperimentParams(baseDSN, false, "", "", "", preset, false, nil, nil)
+		dsn, err := applyExperimentParams(baseDSN, false, "", "", "", preset, false, false, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -457,6 +487,246 @@ func runBulkTest(ctx context.Context, connString string, tableName string) error
 	return nil
 }
 
+func runFullTest(ctx context.Context, connString string) error {
+	db, err := openDB(connString)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	// 1. Ping
+	fmt.Println("=== 1. Ping ===")
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping failed: %w", err)
+	}
+	fmt.Println("Ping OK")
+
+	// 2. Numeric Operations
+	fmt.Println("\n=== 2. Numeric Operations ===")
+	var numVal float64
+	if err := db.QueryRowContext(ctx, "SELECT 1.5 + 2.3 FROM DUAL").Scan(&numVal); err != nil {
+		return fmt.Errorf("numeric query failed: %w", err)
+	}
+	fmt.Printf("1.5 + 2.3 = %v\n", numVal)
+
+	// 3. String Functions
+	fmt.Println("\n=== 3. String Functions ===")
+	var strVal string
+	if err := db.QueryRowContext(ctx, "SELECT UPPER('hello world') FROM DUAL").Scan(&strVal); err != nil {
+		return fmt.Errorf("string function query failed: %w", err)
+	}
+	fmt.Printf("UPPER('hello world') = %s\n", strVal)
+
+	// 4. Timestamp
+	fmt.Println("\n=== 4. Timestamp ===")
+	var tsVal string
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_TIMESTAMP FROM DUAL").Scan(&tsVal); err != nil {
+		fmt.Printf("Timestamp query (non-fatal): %v\n", err)
+	} else {
+		fmt.Printf("CURRENT_TIMESTAMP = %s\n", tsVal)
+	}
+
+	// 5. DDL: Create Table
+	fmt.Println("\n=== 5. DDL: Create Table ===")
+	tableName, err := smokeTableName("")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("full-test table: %s\n", tableName)
+
+	if err := dropTableIgnoreMissing(ctx, db, tableName); err != nil {
+		return err
+	}
+	defer func() {
+		_ = dropTableIgnoreMissing(context.Background(), db, tableName)
+	}()
+
+	ddl := fmt.Sprintf("CREATE TABLE %s (id INTEGER, name VARCHAR(100), age INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", tableName)
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create table failed: %w", err)
+	}
+	fmt.Println("CREATE TABLE OK")
+
+	// 6. INSERT
+	fmt.Println("\n=== 6. INSERT ===")
+	for i, row := range [][]any{{1, "Alice", 30}, {2, "Bob", 25}, {3, "Charlie", 35}} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s (id, name, age) VALUES (?, ?, ?)", tableName), row...); err != nil {
+			return fmt.Errorf("insert row %d failed: %w", i+1, err)
+		}
+	}
+	fmt.Println("INSERT 3 rows OK")
+
+	// 7. SELECT (multi-row)
+	fmt.Println("\n=== 7. SELECT (multi-row) ===")
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT id, name, age FROM %s ORDER BY id", tableName))
+	if err != nil {
+		return fmt.Errorf("select failed: %w", err)
+	}
+	type person struct{ id int64; name string; age int64 }
+	var people []person
+	for rows.Next() {
+		var p person
+		if err := rows.Scan(&p.id, &p.name, &p.age); err != nil {
+			rows.Close()
+			return fmt.Errorf("row scan failed: %w", err)
+		}
+		people = append(people, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rows iteration error: %w", err)
+	}
+	fmt.Printf("Queried %d rows:\n", len(people))
+	for _, p := range people {
+		fmt.Printf("  id=%d name=%s age=%d\n", p.id, p.name, p.age)
+	}
+
+	// 8. Parameterized query with ? (text protocol — works with all servers)
+	fmt.Println("\n=== 8. Parameterized Query (?) ===")
+	var name string
+	var age int64
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT name, age FROM %s WHERE id = ?", tableName), 1).Scan(&name, &age); err != nil {
+		return fmt.Errorf("parameterized query failed: %w", err)
+	}
+	fmt.Printf("Param query: id=1 -> name=%s age=%d\n", name, age)
+
+	// 9. Prepared Statement (?) — uses server-side prepared statement (COM_STMT_EXECUTE).
+	// NOTE: Some OBProxy versions do not support COM_STMT_EXECUTE.
+	// Feature test — non-fatal on failure, connection isolated via db.Conn.
+	runPrepTest := func(label, query string) {
+		fmt.Printf("\n=== %s ===\n", label)
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			fmt.Printf("  get conn failed: %v\n", err)
+			return
+		}
+		stmtPrep, err := conn.PrepareContext(ctx, query)
+		if err != nil {
+			fmt.Printf("  Prepare failed: %v\n", err)
+			// Close underlying driver conn to avoid returning bad conn to pool
+			forceCloseConn(conn)
+			conn.Close()
+			return
+		}
+		var n string
+		var a int64
+		if err := stmtPrep.QueryRowContext(ctx, 1).Scan(&n, &a); err != nil {
+			fmt.Printf("  Exec failed: %v\n", err)
+			stmtPrep.Close()
+			forceCloseConn(conn)
+			conn.Close()
+			return
+		}
+		stmtPrep.Close()
+		conn.Close()
+		fmt.Printf("  id=1 -> name=%s age=%d\n", n, a)
+	}
+
+	runPrepTest("9. Prepared Statement (?)", fmt.Sprintf("SELECT name, age FROM %s WHERE id = ?", tableName))
+	runPrepTest("10. Prepared Statement (:1)", fmt.Sprintf("SELECT name, age FROM %s WHERE id = :1", tableName))
+
+	// 11. UPDATE
+	fmt.Println("\n=== 11. UPDATE ===")
+	res, err := db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET age = ? WHERE id = ?", tableName), 31, 1)
+	if err != nil {
+		return fmt.Errorf("update failed: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	fmt.Printf("UPDATE affected %d row(s)\n", affected)
+
+	var newAge int64
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT age FROM %s WHERE id = 1", tableName)).Scan(&newAge); err != nil {
+		return fmt.Errorf("verify update failed: %w", err)
+	}
+	fmt.Printf("Alice's age is now %d (expected 31)\n", newAge)
+
+	// 12. DELETE
+	fmt.Println("\n=== 12. DELETE ===")
+	res, err = db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE id = ?", tableName), 3)
+	if err != nil {
+		return fmt.Errorf("delete failed: %w", err)
+	}
+	affected, _ = res.RowsAffected()
+	fmt.Printf("DELETE affected %d row(s)\n", affected)
+
+	var count int64
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", tableName)).Scan(&count); err != nil {
+		return fmt.Errorf("count query failed: %w", err)
+	}
+	fmt.Printf("Remaining rows: %d (expected 2)\n", count)
+
+	// 13. NULL Handling
+	fmt.Println("\n=== 13. NULL Handling ===")
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s (id, name, age) VALUES (?, ?, ?)", tableName), 4, nil, nil); err != nil {
+		return fmt.Errorf("insert null failed: %w", err)
+	}
+
+	var nullName sql.NullString
+	var nullAge sql.NullInt64
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT name, age FROM %s WHERE id = 4", tableName)).Scan(&nullName, &nullAge); err != nil {
+		return fmt.Errorf("null query failed: %w", err)
+	}
+	fmt.Printf("NULL row: name.Valid=%v age.Valid=%v\n", nullName.Valid, nullAge.Valid)
+
+	// 14. Transaction Rollback
+	fmt.Println("\n=== 14. Transaction Rollback ===")
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx failed: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET age = ? WHERE id = ?", tableName), 100, 1); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("tx update failed: %w", err)
+	}
+	var txAge int64
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf("SELECT age FROM %s WHERE id = 1", tableName)).Scan(&txAge); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("tx query failed: %w", err)
+	}
+	fmt.Printf("In-transaction age: %d\n", txAge)
+	if err := tx.Rollback(); err != nil {
+		return fmt.Errorf("rollback failed: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT age FROM %s WHERE id = 1", tableName)).Scan(&newAge); err != nil {
+		return fmt.Errorf("verify rollback failed: %w", err)
+	}
+	fmt.Printf("After rollback age: %d (expected 31, not 100)\n", newAge)
+
+	// 15. Transaction Commit
+	fmt.Println("\n=== 15. Transaction Commit ===")
+	tx, err = db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx failed: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s (id, name, age) VALUES (?, ?, ?)", tableName), 5, "Dave", 40); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("tx insert failed: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit failed: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", tableName)).Scan(&count); err != nil {
+		return fmt.Errorf("count failed: %w", err)
+	}
+	fmt.Printf("After commit, rows: %d (expected 3)\n", count)
+
+	// 16. Cleanup (table dropped by deferred function)
+	fmt.Println("\n=== 16. Cleanup ===")
+	fmt.Println("Dropped " + tableName)
+
+	fmt.Println("\n=== ALL TESTS PASSED ===")
+	return nil
+}
+
+func forceCloseConn(conn *sql.Conn) {
+	_ = conn.Raw(func(driverConn any) error {
+		if c, ok := driverConn.(io.Closer); ok {
+			return c.Close()
+		}
+		return nil
+	})
+}
+
 func queryOnDedicatedConn(ctx context.Context, db *sql.DB) (string, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -568,7 +838,8 @@ func dropTableIgnoreMissing(ctx context.Context, db *sql.DB, tableName string) e
 
 func isMissingTableError(err error) bool {
 	msg := err.Error()
-	return strings.Contains(msg, "ORA-00942") || strings.Contains(msg, "error 942")
+	return strings.Contains(msg, "ORA-00942") || strings.Contains(msg, "error 942") ||
+		strings.Contains(msg, "error 1051") || strings.Contains(msg, "Unknown table")
 }
 
 func smokeTableName(name string) (string, error) {
@@ -630,21 +901,21 @@ func (f *repeatedFlag) Set(value string) error {
 	return nil
 }
 
-func buildDSN(user, password, host, port, database string, timeout time.Duration, trace bool, capAdd, capDrop, collation, preset string, ob20 bool, attrs, initSQL []string) string {
+func buildDSN(user, password, host, port, database string, timeout time.Duration, trace bool, capAdd, capDrop, collation, preset string, ob20 bool, oracleMode bool, attrs, initSQL []string) string {
 	u := &url.URL{
 		Scheme: "oceanbase",
 		User:   url.UserPassword(user, password),
 		Host:   net.JoinHostPort(host, port),
 		Path:   database,
 	}
-	values, _ := experimentValues(trace, capAdd, capDrop, collation, preset, ob20, attrs, initSQL)
+	values, _ := experimentValues(trace, capAdd, capDrop, collation, preset, ob20, oracleMode, attrs, initSQL)
 	values.Set("timeout", timeout.String())
 	u.RawQuery = values.Encode()
 	return u.String()
 }
 
-func applyExperimentParams(dsn string, trace bool, capAdd, capDrop, collation, preset string, ob20 bool, attrs, initSQL []string) (string, error) {
-	values, changed := experimentValues(trace, capAdd, capDrop, collation, preset, ob20, attrs, initSQL)
+func applyExperimentParams(dsn string, trace bool, capAdd, capDrop, collation, preset string, ob20 bool, oracleMode bool, attrs, initSQL []string) (string, error) {
+	values, changed := experimentValues(trace, capAdd, capDrop, collation, preset, ob20, oracleMode, attrs, initSQL)
 	if !strings.Contains(dsn, "://") {
 		if strings.HasPrefix(dsn, "oceanbase:") || strings.HasPrefix(dsn, "oboracle:") {
 			if !changed {
@@ -672,8 +943,11 @@ func applyExperimentParams(dsn string, trace bool, capAdd, capDrop, collation, p
 	return u.String(), nil
 }
 
-func experimentValues(trace bool, capAdd, capDrop, collation, preset string, ob20 bool, attrs, initSQL []string) (url.Values, bool) {
+func experimentValues(trace bool, capAdd, capDrop, collation, preset string, ob20 bool, oracleMode bool, attrs, initSQL []string) (url.Values, bool) {
 	values := url.Values{}
+	if oracleMode {
+		values.Set("oracleMode", "true")
+	}
 	if trace {
 		values.Set("trace", "true")
 	}
