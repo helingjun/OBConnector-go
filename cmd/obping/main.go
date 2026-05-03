@@ -572,7 +572,11 @@ func runFullTest(ctx context.Context, connString string) error {
 	if err != nil {
 		return fmt.Errorf("select failed: %w", err)
 	}
-	type person struct{ id int64; name string; age int64 }
+	type person struct {
+		id   int64
+		name string
+		age  int64
+	}
 	var people []person
 	for rows.Next() {
 		var p person
@@ -600,44 +604,44 @@ func runFullTest(ctx context.Context, connString string) error {
 	}
 	fmt.Printf("Param query: id=1 -> name=%s age=%d\n", name, age)
 
-		// 9. Prepared Statement (?) — uses server-side prepared statement (COM_STMT_EXECUTE).
-		// NOTE: Some OBProxy versions do not support COM_STMT_EXECUTE.
-		// Feature test — non-fatal on failure. Uses a separate DB handle to avoid
-		// connection desync (e.g. from unsupported :1 placeholders) affecting DML state.
-		runPrepTest := func(label, query string) {
-			fmt.Printf("\n=== %s ===\n", label)
-			prepDB, err := openDB(connString)
-			if err != nil {
-				fmt.Printf("  get dedicated db failed: %v\n", err)
-				return
-			}
-			defer prepDB.Close()
-			conn, err := prepDB.Conn(ctx)
-			if err != nil {
-				fmt.Printf("  get conn failed: %v\n", err)
-				return
-			}
-			stmtPrep, err := conn.PrepareContext(ctx, query)
-			if err != nil {
-				fmt.Printf("  Prepare failed: %v\n", err)
-				conn.Close()
-				return
-			}
-			var n string
-			var a int64
-			if err := stmtPrep.QueryRowContext(ctx, 1).Scan(&n, &a); err != nil {
-				fmt.Printf("  Exec failed: %v\n", err)
-				stmtPrep.Close()
-				conn.Close()
-				return
-			}
+	// 9. Prepared Statement (?) — uses server-side prepared statement (COM_STMT_EXECUTE).
+	// NOTE: Some OBProxy versions do not support COM_STMT_EXECUTE.
+	// Feature test — non-fatal on failure. Uses a separate DB handle to avoid
+	// connection desync (e.g. from unsupported :1 placeholders) affecting DML state.
+	runPrepTest := func(label, query string) {
+		fmt.Printf("\n=== %s ===\n", label)
+		prepDB, err := openDB(connString)
+		if err != nil {
+			fmt.Printf("  get dedicated db failed: %v\n", err)
+			return
+		}
+		defer prepDB.Close()
+		conn, err := prepDB.Conn(ctx)
+		if err != nil {
+			fmt.Printf("  get conn failed: %v\n", err)
+			return
+		}
+		stmtPrep, err := conn.PrepareContext(ctx, query)
+		if err != nil {
+			fmt.Printf("  Prepare failed: %v\n", err)
+			conn.Close()
+			return
+		}
+		var n string
+		var a int64
+		if err := stmtPrep.QueryRowContext(ctx, 1).Scan(&n, &a); err != nil {
+			fmt.Printf("  Exec failed: %v\n", err)
 			stmtPrep.Close()
 			conn.Close()
-			fmt.Printf("  id=1 -> name=%s age=%d\n", n, a)
+			return
 		}
+		stmtPrep.Close()
+		conn.Close()
+		fmt.Printf("  id=1 -> name=%s age=%d\n", n, a)
+	}
 
-		runPrepTest("9. Prepared Statement (?)", fmt.Sprintf("SELECT name, age FROM %s WHERE id = ?", tableName))
-		runPrepTest("10. Prepared Statement (:1)", fmt.Sprintf("SELECT name, age FROM %s WHERE id = :1", tableName))
+	runPrepTest("9. Prepared Statement (?)", fmt.Sprintf("SELECT name, age FROM %s WHERE id = ?", tableName))
+	runPrepTest("10. Prepared Statement (:1)", fmt.Sprintf("SELECT name, age FROM %s WHERE id = :1", tableName))
 
 	// 11. UPDATE
 	fmt.Println("\n=== 11. UPDATE ===")
